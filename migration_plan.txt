@@ -1,0 +1,49 @@
+Create a baseline application for a production-ready Single Page Application (SPA) using Next.js for the frontend and Spring Boot for the backend, integrated with Keycloak for authentication and authorization. The application should be database agnostic with PostgreSQL as the primary database. The development and deployment stack includes Git/GitHub, Jenkins, Nginx, Docker, and Prometheus for monitoring. The application should have the following features and configurations:
+
+1. **Frontend (Next.js):**
+   - Initialize a Next.js project.
+   - Integrate Redux for state management (optional based on complexity).
+   - Use React Query for server-state management and data fetching.
+   - Configure Axios for making HTTP requests to the backend.
+   - Integrate Keycloak JavaScript Adapter for authentication and authorization.
+   - Set up Tailwind CSS for styling using shadcn/ui.
+   - Integrate Radix UI for headless component primitives.
+   - Use Phosphor Icons for icons.
+   - Set up Webpack and Babel (built-in with Next.js).
+   - Configure ESLint for code quality.
+   - Set up Jest and React Testing Library for testing.
+   - Implement Service Workers for enabling PWA features.
+   - Containerize the frontend application using Docker.
+
+2. **Backend (Spring Boot):**
+   - Initialize a Spring Boot project.
+   - Integrate Spring Security with Keycloak for securing the application.
+   - Configure Spring Security Keycloak Adapter.
+   - Set up Spring Data JPA for database interactions with support for multiple database systems.
+   - Use Hibernate as the ORM framework.
+   - Configure Spring Web for creating REST APIs.
+   - Integrate Spring Actuator for monitoring and management.
+   - Utilize Spring Cloud for building microservices and cloud-based applications.
+   - Configure HikariCP for high-performance JDBC connection pooling.
+   - Use Liquibase for database migration and version control.
+   - Set PostgreSQL as the primary database.
+   - Set up JUnit and Mockito for testing.
+   - Configure Logback for logging.
+   - Integrate Swagger for API documentation.
+   - Containerize the backend application using Docker.
+
+3. **Development and Deployment:**
+   - Set up Git and GitHub for version control and repository hosting.
+   - Configure Jenkins for CI/CD pipelines.
+   - Use Nginx as the web server for serving the Next.js application and as a reverse proxy to the Spring Boot backend.
+   - Containerize both frontend and backend applications using Docker.
+   - Set up Prometheus for monitoring and alerting.
+
+4. **Security and Performance:**
+   - Integrate Keycloak for authentication and authorization management.
+   - Use JWT for securing API endpoints.
+   - Implement OWASP Dependency-Check for checking vulnerabilities in dependencies.
+   - Integrate New Relic or Dynatrace for performance monitoring.
+   - Configure a CDN for serving static assets.
+
+Generate the baseline code structure and configurations for both frontend and backend, ensuring all the specified technologies and integrations are included. Provide clear documentation and instructions for setting up and running the application.

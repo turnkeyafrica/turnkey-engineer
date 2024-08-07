@@ -1,6 +1,6 @@
-# 🤖 Claude Engineer
+# 🤖 Turnkey Engineer
 
-Claude Engineer is an advanced interactive command-line interface (CLI) that harnesses the power of Anthropic's Claude 3 and Claude 3.5 models to assist with a wide range of software development tasks. This tool seamlessly combines the capabilities of state-of-the-art large language models with practical file system operations, web search functionality, intelligent code analysis, and execution capabilities.
+Turnkey Engineer is an advanced interactive command-line interface (CLI) that harnesses the power of Anthropic's Claude 3 and Claude 3.5 models to assist with a wide range of software development tasks. This tool seamlessly combines the capabilities of state-of-the-art large language models with practical file system operations, web search functionality, intelligent code analysis, and execution capabilities.
 
 ## ✨ Features
 
@@ -33,8 +33,8 @@ Claude Engineer is an advanced interactive command-line interface (CLI) that har
 
 1. Clone this repository:
    ```
-   git clone https://github.com/doriandarko/claude-engineer.git
-   cd claude-engineer
+   git clone https://github.com/turnkeyafrica/turnkey-engineer.git
+   cd turnkey-engineer
    ```
 
 2. Install the required dependencies:
@@ -48,6 +48,7 @@ Claude Engineer is an advanced interactive command-line interface (CLI) that har
      ```
      ANTHROPIC_API_KEY=your_anthropic_api_key
      TAVILY_API_KEY=your_tavily_api_key
+     GEMINI_API_KEY=your_gemini_api_key
      ```
 
 4. Set up the virtual environment for code execution:
@@ -62,7 +63,7 @@ Claude Engineer is an advanced interactive command-line interface (CLI) that har
 
 ## 🔧 Virtual Environment Setup
 
-Claude Engineer uses a dedicated virtual environment for code execution to ensure isolation and security. The virtual environment is automatically created the first time you run a piece of code. However, if you want to set it up manually or customize it, follow these steps:
+Turnkey Engineer uses a dedicated virtual environment for code execution to ensure isolation and security. The virtual environment is automatically created the first time you run a piece of code. However, if you want to set it up manually or customize it, follow these steps:
 
 1. Create the virtual environment:
    ```
@@ -93,13 +94,13 @@ The code_execution_env virtual environment will be used for all code execution t
 
 ## 🚀 Usage
 
-Run the main script to start the Claude Engineer interface:
+Run the main script to start the Turnkey Engineer interface:
 
 ```
 python main.py
 ```
 
-Once started, you can interact with Claude Engineer by typing your queries or commands. Some example interactions:
+Once started, you can interact with Turnkey Engineer by typing your queries or commands. Some example interactions:
 
 - "Create a new Python project structure for a web application"
 - "Explain the code in file.py and suggest improvements"
@@ -117,13 +118,13 @@ Special commands:
 - Type 'save chat' to save the current chat log.
 - Press Ctrl+C at any time to exit the automode and return to regular chat.
 
-After each interaction, Claude Engineer will display:
+After each interaction, Turnkey Engineer will display:
 - Token usage (input, output, and total) for the current model
 - Remaining context window size
 
 ### Code Execution and Process Management
 
-Claude Engineer now supports executing code in an isolated 'code_execution_env' virtual environment:
+Turnkey Engineer now supports executing code in an isolated 'code_execution_env' virtual environment:
 
 1. Use the `execute_code` tool to run Python code safely in the isolated environment.
 2. Long-running processes can be managed using the process ID returned by `execute_code`.
@@ -131,7 +132,7 @@ Claude Engineer now supports executing code in an isolated 'code_execution_env' 
 
 ### Using Different AI Models
 
-Claude Engineer utilizes multiple specialized AI models:
+Turnkey Engineer utilizes multiple specialized AI models:
 
 - MAINMODEL: Claude 3 or Claude 3.5 for general interactions
 - TOOLCHECKERMODEL: Validates tool usage and outputs
@@ -160,7 +161,7 @@ To use automode:
 
 ### 📊 Enhanced Diff-based File Editing
 
-Claude Engineer now supports an improved diff-based file editing system, allowing for more precise and controlled modifications to existing files. The new workflow includes:
+Turnkey Engineer now supports an improved diff-based file editing system, allowing for more precise and controlled modifications to existing files. The new workflow includes:
 
 1. Reading the entire content of a file using the `edit_and_apply` function without providing new content.
 2. Applying changes to the file using the `edit_and_apply` function with new content, which shows a detailed diff of the proposed changes.
@@ -190,7 +191,7 @@ The dynamic system prompt enhances Claude's ability to adapt to different scenar
 
 ### 📊 Token Management and Visualization
 
-Claude Engineer now features improved token management and visualization:
+Turnkey Engineer now features improved token management and visualization:
 
 1. Enhanced token management using file context in the system prompt.
 2. Improved token visualization using a table format.
@@ -201,7 +202,7 @@ These improvements provide better insights into token usage and help manage conv
 
 ### 🔧 Available Tools
 
-Claude Engineer comes with a set of powerful tools to assist with various tasks:
+Turnkey Engineer comes with a set of powerful tools to assist with various tasks:
 
 1. create_folder: Create a new folder at a specified path.
 2. create_file: Create a new file at a specified path with content.
@@ -220,7 +221,7 @@ These tools allow Claude to interact with the file system, manage project struct
 
 ### 🖼️ Image Analysis
 
-Claude Engineer now supports image analysis capabilities. To use this feature:
+Turnkey Engineer now supports image analysis capabilities. To use this feature:
 
 1. Type 'image' when prompted for input.
 2. Drag and drop your image file into the terminal or provide the file path.
@@ -231,7 +232,7 @@ This feature enables Claude to assist with tasks involving visual data, such as 
 
 ### 🛡️ Error Handling and Recovery
 
-Claude Engineer implements robust error handling and recovery mechanisms:
+Turnkey Engineer implements robust error handling and recovery mechanisms:
 
 1. Graceful handling of API errors and network issues.
 2. Automatic retries for transient failures.
@@ -244,7 +245,7 @@ These features ensure a smooth and reliable user experience, even in the face of
 
 ### 💾 Chat Log Saving
 
-You can save the current chat log at any time during your interaction with Claude Engineer:
+You can save the current chat log at any time during your interaction with Turnkey Engineer:
 
 1. Type 'save' when prompted for input.
 2. The chat log will be saved to a file in the current directory with a timestamp in the filename.
@@ -252,7 +253,7 @@ You can save the current chat log at any time during your interaction with Claud
 
 ## 🧠 AI Models and Specialized Agents
 
-Claude Engineer utilizes multiple AI models to provide specialized functionality:
+Turnkey Engineer utilizes multiple AI models to provide specialized functionality:
 
 1. MAINMODEL (Claude 3 or Claude 3.5): Handles general interactions and task processing.
 2. TOOLCHECKERMODEL: Validates the usage and outputs of various tools to ensure reliability.

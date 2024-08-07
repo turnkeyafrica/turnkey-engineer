@@ -17,6 +17,11 @@ import asyncio
 import aiohttp
 from prompt_toolkit import PromptSession
 from prompt_toolkit.styles import Style
+import re
+import ast
+from google.protobuf.struct_pb2 import Struct
+from jira import JIRA
+from jira.exceptions import JIRAError
 
 async def get_user_input(prompt="You: "):
     style = Style.from_dict({
@@ -32,6 +37,12 @@ import sys
 import signal
 import logging
 from typing import Tuple, Optional
+
+import os
+import google.generativeai as genai
+genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+from google.protobuf.json_format import MessageToDict
+
 
 
 def setup_virtual_environment() -> Tuple[str, str]:
@@ -61,6 +72,17 @@ anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
 if not anthropic_api_key:
     raise ValueError("ANTHROPIC_API_KEY not found in environment variables")
 client = Anthropic(api_key=anthropic_api_key)
+
+# Create the Gemini
+# See https://ai.google.dev/api/python/google/generativeai/GenerativeModel
+generation_config = {
+  "temperature": 0,
+  "top_p": 0.95,
+  "top_k": 64,
+  "max_output_tokens": 8192,
+  "response_mime_type": "text/plain",
+
+}
 
 # Initialize the Tavily client
 tavily_api_key = os.getenv("TAVILY_API_KEY")
@@ -106,11 +128,19 @@ MAX_CONTEXT_TOKENS = 200000  # Reduced to 200k tokens for context window
 # Models
 # Models that maintain context memory across interactions
 MAINMODEL = "claude-3-5-sonnet-20240620"  # Maintains conversation history and file contents
+GEMINI_MAINMODEL = "models/gemini-1.5-flash-001"
 
 # Models that don't maintain context (memory is reset after each call)
 TOOLCHECKERMODEL = "claude-3-5-sonnet-20240620"
+GEMINI_TOOLCHECKERMODEL = "models/gemini-1.5-flash-001"
+
+# CLAUDE AND GEMINI Models 
 CODEEDITORMODEL = "claude-3-5-sonnet-20240620"
+GEMINI_CODEEDITORMODEL = "models/gemini-1.5-flash-001"
+
+# CLAUDE AND GEMINI Models 
 CODEEXECUTIONMODEL = "claude-3-5-sonnet-20240620"
+GEMINI_CODEEXECUTIONMODEL = "models/gemini-1.5-flash-001"
 
 # System prompts
 BASE_SYSTEM_PROMPT = """
@@ -141,6 +171,7 @@ Available tools and their optimal use cases:
 7. read_multiple_files: Read the contents of multiple existing files at once. Use this when you need to examine or work with multiple files simultaneously.
 8. list_files: List all files and directories in a specified folder.
 9. tavily_search: Perform a web search using the Tavily API for up-to-date information.
+10. get_jira_issue_details: Fetch details of a Jira issue, including its description and comments.
 
 Tool Usage Guidelines:
 - Always use the most appropriate tool for the task at hand.
@@ -231,14 +262,96 @@ def update_system_prompt(current_iteration: Optional[int] = None, max_iterations
     else:
         return BASE_SYSTEM_PROMPT + file_contents_prompt + "\n\n" + chain_of_thought_prompt
 
-def create_folder(path):
+
+def get_jira_issue_details(issue_key: str) -> str:
+    """
+    Fetch details of a Jira issue, including its description and comments.
+
+    This function takes an issue key as input, retrieves the corresponding Jira issue,
+    and returns a formatted string containing the issue description and comments.
+    If the issue is not found, it returns a message indicating that the issue was not found.
+    If any other error occurs, it returns a generic error message.
+
+    Parameters:
+    issue_key (str): The key of the Jira issue.
+
+    Returns:
+    str: A formatted string containing the issue description and comments.
+         If the issue is not found, returns a message indicating that the issue was not found.
+         If any other error occurs, returns a generic error message.
+    """
+    try:
+        # Get credentials from environment variables
+        jira_url = os.getenv("JIRA_URL")
+        username = os.getenv("JIRA_USERNAME")
+        password = os.getenv("JIRA_PASSWORD")
+
+        # Connect to Jira
+        jira = JIRA(jira_url, basic_auth=(username, password))
+
+        # Get the issue
+        issue = jira.issue(issue_key)
+
+        # Get the issue description
+        description = issue.fields.description
+
+        # Get the comments
+        comments = issue.fields.comment.comments
+        comment_texts = [comment.body for comment in comments]
+
+        # Create the formatted string
+        result = f"The description of the issue {issue_key} is: {description}\n"
+        result += "Comments:\n"
+        for i, comment in enumerate(comment_texts, start=1):
+            result += f"Comment {i}: {comment}\n"
+
+        return result
+
+    except JIRAError as e:
+        if e.status_code == 404:
+            return f"Issue {issue_key} not found."
+        else:
+            return f"An error occurred: {e.text}"
+
+
+def create_folder(path: str = ".") -> str:
+    """
+    Create a new folder at the specified path.
+
+    This function will create a new folder at the given path. If the folder already exists,
+    this function will do nothing. If any error occurs during the creation of the folder,
+    the function will return an error message.
+
+    Parameters:
+    path (str): The absolute or relative path where the folder should be created.
+
+    Returns:
+    str: A message indicating the success or failure of the folder creation.
+    """
     try:
         os.makedirs(path, exist_ok=True)
         return f"Folder created: {path}"
     except Exception as e:
         return f"Error creating folder: {str(e)}"
 
-def create_file(path, content=""):
+
+def create_file(path: str = ".", content: str = "") -> str:
+    """
+    Create a new file at the specified path with the given content.
+
+    This function creates a new file at the given path with the provided content.
+    If the file already exists, this function will overwrite it. If any error
+    occurs during the creation of the file, the function will return an error
+    message. The created file's content is also added to the system prompt for
+    future reference.
+
+    Parameters:
+    path (str): The absolute or relative path where the file should be created.
+    content (str, optional): The content to write to the file. Defaults to an empty string.
+
+    Returns:
+    str: A message indicating the success or failure of the file creation.
+    """
     global file_contents
     try:
         with open(path, 'w') as f:
@@ -353,8 +466,30 @@ def parse_search_replace_blocks(response_text):
     return json.dumps(blocks)  # Keep returning JSON string
 
 
-async def edit_and_apply(path, instructions, project_context, is_automode=False, max_retries=3):
+async def edit_and_apply(instructions: str, project_context: str, is_automode: bool = False, max_retries: int = 3, path: str = "."):
+    """
+    Apply AI-powered improvements to a file based on specific instructions and detailed project context.
+
+    This function reads the file, processes it in batches using AI with conversation history and
+    comprehensive code-related project context. It generates a diff and allows the user to confirm
+    changes before applying them. The goal is to maintain consistency and prevent breaking connections
+    between files. This function should be used for complex code modifications that require understanding
+    of the broader project context.
+
+    Parameters:
+    path (str): The absolute or relative path of the file to edit.
+    instructions (str): Specific instructions for the edit, including any changes or improvements needed.
+    project_context (str): Comprehensive context about the project, including recent changes, new variables
+                          or functions, interconnections between files, coding standards, and any other
+                          relevant information that might affect the edit.
+    is_automode (bool, optional): Flag indicating whether the function is being called in automode. Defaults to False.
+    max_retries (int, optional): Maximum number of retries for applying edits if some edits fail. Defaults to 3.
+
+    Returns:
+    str: A message indicating the success or failure of applying changes to the file.
+    """
     global file_contents
+    print("In Edit and Apply Function")
     try:
         original_content = file_contents.get(path, "")
         if not original_content:
@@ -398,7 +533,25 @@ async def edit_and_apply(path, instructions, project_context, is_automode=False,
 
 
 
-async def apply_edits(file_path, edit_instructions, original_content):
+async def apply_edits(file_path: str, edit_instructions: str, original_content: str) -> Tuple[str, bool, str]:
+    """
+    Apply a series of edits to a file based on the provided edit instructions.
+
+    This function iterates through the edit instructions, searches for the specified content in the file,
+    and replaces it with the new content. It uses a progress bar to display the progress of the edits.
+    If a search content is not found in the file, it is considered a failed edit. The function returns
+    the edited content, a boolean indicating whether any changes were made, and a string containing
+    the details of any failed edits.
+
+    Parameters:
+    file_path (str): The path to the file to edit.
+    edit_instructions (str): A list of edit instructions, each containing a 'search' and 'replace' field.
+    original_content (str): The original content of the file.
+
+    Returns:
+    Tuple[str, bool, str]: A tuple containing the edited content, a boolean indicating whether any changes
+                           were made, and a string containing the details of any failed edits.
+    """
     changes_made = False
     edited_content = original_content
     total_edits = len(edit_instructions)
@@ -463,6 +616,28 @@ def generate_diff(original, new, path):
     return highlighted_diff
 
 async def execute_code(code, timeout=10):
+    """
+    Execute Python code in the 'code_execution_env' virtual environment and return the output.
+
+    This function writes the provided Python code to a temporary file, then runs it in a subprocess
+    within the 'code_execution_env' virtual environment. It captures the standard output, standard
+    error, and return code of the executed code. If the code execution times out, the function
+    returns a message indicating that the process is still running in the background. The function
+    also generates a unique identifier for the process and stores it in a global dictionary for
+    later management.
+
+    Parameters:
+    code (str): The Python code to execute in the 'code_execution_env' virtual environment.
+                Include all necessary imports and ensure the code is complete and self-contained.
+    timeout (int, optional): The maximum time to wait for the code execution to complete.
+                            Defaults to 10 seconds.
+
+    Returns:
+    tuple: A tuple containing the process ID and the execution result. The execution result is a
+           string that includes the process ID, standard output, standard error, and return code.
+           If the code execution times out, the standard output will indicate that the process
+           is still running in the background.
+    """
     global running_processes
     venv_path, activate_script = setup_virtual_environment()
     
@@ -506,7 +681,21 @@ async def execute_code(code, timeout=10):
     execution_result = f"Process ID: {process_id}\n\nStdout:\n{stdout}\n\nStderr:\n{stderr}\n\nReturn Code: {return_code}"
     return process_id, execution_result
 
-def read_file(path):
+def read_file(path: str = ".") -> str:
+    """
+    Read the contents of a file at the specified path and store it in the system prompt.
+
+    This function reads the contents of a file at the given path and stores the contents in the
+    global file_contents dictionary. If the file is read successfully, the function returns a
+    success message. If an error occurs during the file reading process, the function returns an
+    error message.
+
+    Parameters:
+    path (str): The absolute or relative path of the file to read.
+
+    Returns:
+    str: A message indicating the success or failure of reading the file.
+    """
     global file_contents
     try:
         with open(path, 'r') as f:
@@ -516,7 +705,23 @@ def read_file(path):
     except Exception as e:
         return f"Error reading file: {str(e)}"
 
-def read_multiple_files(paths):
+def read_multiple_files(paths: str = "."):
+    """
+    Read the contents of multiple files at the specified paths.
+
+    This function reads the contents of multiple files at the given paths and stores the contents in the
+    global file_contents dictionary. If a file is read successfully, the function appends a success
+    message to the results list. If an error occurs during the file reading process, the function
+    appends an error message to the results list. The function returns a string containing all the
+    results, separated by newlines.
+
+    Parameters:
+    paths (list): A list of absolute or relative paths of the files to read. Use forward slashes (/)
+                 for path separation, even on Windows systems.
+
+    Returns:
+    str: A string containing the results of reading each file, separated by newlines.
+    """
     global file_contents
     results = []
     for path in paths:
@@ -529,14 +734,43 @@ def read_multiple_files(paths):
             results.append(f"Error reading file '{path}': {str(e)}")
     return "\n".join(results)
 
-def list_files(path="."):
+def list_files(path: str ="."):
+    """
+    List all files and directories in the specified folder.
+
+    This function takes a path as input and returns a string containing the names of all files and directories in that path.
+    If no path is provided, it defaults to the current working directory.
+    If the path does not exist or cannot be read, the function returns an appropriate error message.
+
+    Parameters:
+    path (str, optional): The absolute or relative path of the folder to list. Defaults to the current working directory.
+
+    Returns:
+    str: A string containing the names of all files and directories in the specified path, separated by newlines.
+         If an error occurs, returns an error message.
+    """
     try:
         files = os.listdir(path)
         return "\n".join(files)
     except Exception as e:
         return f"Error listing files: {str(e)}"
 
-def tavily_search(query):
+def tavily_search(query: str):
+    """
+    Perform a web search using the Tavily API to get up-to-date information or additional context.
+
+    This function sends a query to the Tavily API for a web search and returns a summary of the search results.
+    It uses the advanced search depth to provide more detailed and relevant results. If the search is successful,
+    the function returns the response from the API. If an error occurs during the search, the function returns
+    an error message.
+
+    Parameters:
+    query (str): The search query. Be as specific and detailed as possible to get the most relevant results.
+
+    Returns:
+    str: The response from the Tavily API, which includes a summary of the search results. If an error occurs,
+         the function returns an error message.
+    """
     try:
         response = tavily.qna_search(query=query, search_depth="advanced")
         return response
@@ -726,6 +960,8 @@ async def execute_tool(tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, 
             result = list_files(tool_input.get("path", "."))
         elif tool_name == "tavily_search":
             result = tavily_search(tool_input["query"])
+        elif tool_name == "get_jira_issue_details":
+            result = get_jira_issue_details(tool_input["issue_key"])
         elif tool_name == "stop_process":
             result = stop_process(tool_input["process_id"])
         elif tool_name == "execute_code":
@@ -740,19 +976,19 @@ async def execute_tool(tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, 
             result = f"Unknown tool: {tool_name}"
 
         return {
-            "content": result,
+            "parts": result,
             "is_error": is_error
         }
     except KeyError as e:
         logging.error(f"Missing required parameter {str(e)} for tool {tool_name}")
         return {
-            "content": f"Error: Missing required parameter {str(e)} for tool {tool_name}",
+            "parts": f"Error: Missing required parameter {str(e)} for tool {tool_name}",
             "is_error": True
         }
     except Exception as e:
         logging.error(f"Error executing tool {tool_name}: {str(e)}")
         return {
-            "content": f"Error executing tool {tool_name}: {str(e)}",
+            "parts": f"Error executing tool {tool_name}: {str(e)}",
             "is_error": True
         }
 
@@ -823,7 +1059,7 @@ def save_chat():
     filename = f"Chat_{now.strftime('%H%M')}.md"
     
     # Format conversation history
-    formatted_chat = "# TurnQuest AI Engineer Chat Log\n\n"
+    formatted_chat = "# Claude-3-Sonnet Engineer Chat Log\n\n"
     for message in conversation_history:
         if message['role'] == 'user':
             formatted_chat += f"## User\n\n{message['content']}\n\n"
@@ -847,9 +1083,73 @@ def save_chat():
     
     return filename
 
+def break_into_variables(input_str):
+    # Remove the curly braces and split the string into key-value pairs
+    input_str = input_str.strip('{}')
+    key, value = input_str.split(': ')
+    
+    # Strip the quotes and spaces
+    key = key.strip('"')
+    value = value.strip('"')
+    
+    return key, value
 
 
-async def chat_with_claude(user_input, image_path=None, current_iteration=None, max_iterations=None):
+# Function to extract information
+def extract_info(item):
+    # Extract the string content from the dictionary
+    item_str = list(item)[0]
+    
+    # Parsing the 'input' part
+    input_start = item_str.find('input={') + len('input=')
+    input_end = item_str.find('}, name=') + 1
+    input_str = item_str[input_start:input_end]
+    input_dict = ast.literal_eval(input_str)
+    
+    # Extracting 'name' and 'type'
+    name_start = item_str.find('name=') + len('name=')
+    name_end = item_str.find(', type=')
+    name = item_str[name_start:name_end].strip("'")
+    
+    type_start = item_str.find('type=') + len('type=')
+    type_ = item_str[type_start:].strip("'")
+    
+    return name, type_, input_dict
+
+ 
+# Function to create the desired JSON structure
+def create_json_structure(data):
+    result = {
+        "role": "model",
+        "parts": []
+    }
+    
+    for item in data:
+        name, type_, input_dict = extract_info(item)
+        function_call = {
+            "function_call": {
+                "name": name,
+                "args": {
+                    "fields": []
+                }
+            }
+        }
+        
+        for key, value in input_dict.items():
+            field = {
+                "key": key,
+                "value": {
+                    "string_value": value
+                }
+            }
+            function_call["function_call"]["args"]["fields"].append(field)
+        
+        result["parts"].append(function_call)
+    
+    return result
+
+
+async def chat_with_gemini(user_input, image_path=None, current_iteration=None, max_iterations=None):
     global conversation_history, automode, main_model_tokens
 
     # This function uses MAINMODEL, which maintains context across calls
@@ -865,7 +1165,7 @@ async def chat_with_claude(user_input, image_path=None, current_iteration=None, 
 
         image_message = {
             "role": "user",
-            "content": [
+            "parts": [
                 {
                     "type": "image",
                     "source": {
@@ -883,15 +1183,18 @@ async def chat_with_claude(user_input, image_path=None, current_iteration=None, 
         current_conversation.append(image_message)
         console.print(Panel("Image message added to conversation history", title_align="left", title="Image Added", style="green"))
     else:
-        current_conversation.append({"role": "user", "content": user_input})
+        # Add User Input to Current Conversation
+        current_conversation.append({"role": "user", "parts":[user_input]})
 
     # Filter conversation history to maintain context
     filtered_conversation_history = []
+    #print("CONVERSATION HISTORY 1", conversation_history)
+    
     for message in conversation_history:
-        if isinstance(message['content'], list):
+        if isinstance(message['parts'], list):
             filtered_content = [
-                content for content in message['content']
-                if content.get('type') != 'tool_result' or (
+                content for content in message['parts']
+                if not isinstance(content, dict) or content.get('type') != 'tool_result' or (
                     content.get('type') == 'tool_result' and
                     not any(keyword in content.get('output', '') for keyword in [
                         "File contents updated in system prompt",
@@ -901,33 +1204,38 @@ async def chat_with_claude(user_input, image_path=None, current_iteration=None, 
                 )
             ]
             if filtered_content:
-                filtered_conversation_history.append({**message, 'content': filtered_content})
+                filtered_conversation_history.append({**message, 'parts': filtered_content})
         else:
             filtered_conversation_history.append(message)
 
     # Combine filtered history with current conversation to maintain context
     messages = filtered_conversation_history + current_conversation
     current_prompt = update_system_prompt(current_iteration, max_iterations)
-    #print("CURRENT PROMPT", current_prompt)
+    print("CURRENT PROMPT", current_prompt)
+    print("Current MEssages", messages)    
     try:
-        # MAINMODEL call, which maintains context
-        response = client.messages.create(
-            model=MAINMODEL,
-            max_tokens=8000,
-            system=update_system_prompt(current_iteration, max_iterations),
-            extra_headers={"anthropic-beta": "max-tokens-3-5-sonnet-2024-07-15"},
-            messages=messages,
-            tools=tools,
-            tool_choice={"type": "auto"}
+        # Set the model up with tools.
+        gemini_model = genai.GenerativeModel(
+            model_name=GEMINI_MAINMODEL,
+            generation_config=generation_config,
+            tools=[create_folder, create_file, list_files, edit_and_apply, read_multiple_files,tavily_search,get_jira_issue_details],
+            system_instruction=update_system_prompt(current_iteration, max_iterations) 
         )
+
+        #gemini_chat_session = gemini_model.start_chat(history=[])
+        #response = gemini_chat_session.send_message(user_input)
+        #tool_response = gemini_tool_model.generate_content(messages)
+        response = gemini_model.generate_content(messages)
+        print("Response from MainMODel", response)
         # Update token usage for MAINMODEL
-        main_model_tokens['input'] += response.usage.input_tokens
-        main_model_tokens['output'] += response.usage.output_tokens
+        #print("CHATHISTORY 1", gemini_chat_session.history)
+        main_model_tokens['input'] += response.usage_metadata.prompt_token_count
+        main_model_tokens['output'] += response.usage_metadata.candidates_token_count
     except APIStatusError as e:
         if e.status_code == 429:
             console.print(Panel("Rate limit exceeded. Retrying after a short delay...", title="API Error", style="bold yellow"))
             time.sleep(5)
-            return await chat_with_claude(user_input, image_path, current_iteration, max_iterations)
+            return await chat_with_gemini(user_input, image_path, current_iteration, max_iterations)
         else:
             console.print(Panel(f"API Error: {str(e)}", title="API Error", style="bold red"))
             return "I'm sorry, there was an error communicating with the AI. Please try again.", False
@@ -938,16 +1246,28 @@ async def chat_with_claude(user_input, image_path=None, current_iteration=None, 
     assistant_response = ""
     exit_continuation = False
     tool_uses = []
-    #print("RESPONSE CONTENT", response.content)
-    for content_block in response.content:
-        if content_block.type == "text":
-            assistant_response += content_block.text
-            if CONTINUATION_EXIT_PHRASE in content_block.text:
-                exit_continuation = True
-        elif content_block.type == "tool_use":
-            tool_uses.append(content_block)
 
-    console.print(Panel(Markdown(assistant_response), title="Claude's Response", title_align="left", border_style="blue", expand=False))
+    #print("FUNCTION CALL", response.candidates[0])
+    # Extracting content
+    for candidate in response.candidates:
+        for part in candidate.content.parts:
+            if pn := part.text:
+                text_content = part.text
+                assistant_response += text_content
+                if CONTINUATION_EXIT_PHRASE in text_content:
+                    exit_continuation = True
+            # Extract function call details if present
+            elif fn := part.function_call:
+                args = ", ".join(f"'{key}': '{val}'" for key, val in fn.args.items())
+                # Print the function call for debugging purposes
+                print(f"Print Function Call, input={{{args} }}, name={fn.name}, type='function_call'}} ")
+                # Append the function call details to the tool_uses list
+                tool_uses.append({
+                    f"input={{{args}}}, name='{fn.name}', type='function_call'"
+                })
+
+    
+    console.print(Panel(Markdown(assistant_response), title="Gemini's Response", title_align="left", border_style="blue", expand=False))
 
     # Display files in context
     if file_contents:
@@ -955,87 +1275,95 @@ async def chat_with_claude(user_input, image_path=None, current_iteration=None, 
     else:
         files_in_context = "No files in context. Read, create, or edit files to add."
     console.print(Panel(files_in_context, title="Files in Context", title_align="left", border_style="white", expand=False))
-    #print("TOOL USES", tool_uses)
+    
+    print("TOOL USES", tool_uses)
+    
+   # print("Extracted Data", extracted_data)
     for tool_use in tool_uses:
-        tool_name = tool_use.name
-        tool_input = tool_use.input
-        tool_use_id = tool_use.id
-        #print("TOOL input", tool_input)
+        name, type_, input_dict = extract_info(tool_use)
+        tool_name = name
+        tool_input = input_dict
+        print("TOOL INPUT", tool_input)
+
+        # TODO Fix this - Shikoli. 
+        tool_use_id = "TOOLUSEID"
+
         console.print(Panel(f"Tool Used: {tool_name}", style="green"))
         console.print(Panel(f"Tool Input: {json.dumps(tool_input, indent=2)}", style="green"))
-
+        # Get the JSON structure
+        output_json = create_json_structure(tool_uses)
+        # Print the JSON structure
+        #print(json.dumps(output_json, indent=4))
+        current_conversation.append(output_json)
+        print("INPUT BEFORE EXECUTE TOOL", current_conversation)
         tool_result = await execute_tool(tool_name, tool_input)
         
         if tool_result["is_error"]:
-            console.print(Panel(tool_result["content"], title="Tool Execution Error", style="bold red"))
+            console.print(Panel(tool_result["parts"], title="Tool Execution Error", style="bold red"))
         else:
-            console.print(Panel(tool_result["content"], title_align="left", title="Tool Result", style="green"))
+            console.print(Panel(tool_result["parts"], title_align="left", title="Tool Result", style="green"))
 
-        current_conversation.append({
-            "role": "assistant",
-            "content": [
-                {
-                    "type": "tool_use",
-                    "id": tool_use_id,
-                    "name": tool_name,
-                    "input": tool_input
-                }
-            ]
-        })
+        #print("IN Tool Use Current Conversation", current_conversation)
+        print("TOOL RESULTX5", tool_result)
+        # Put the result in a protobuf Struct
+        s = Struct()
+        s.update({"result": tool_result})
+        # Update this after https://github.com/google/generative-ai-python/issues/243
+        function_response = genai.protos.Part(
+            function_response=genai.protos.FunctionResponse(name=tool_name, response=s)
+        )
+        print("FUNCTION RESPONSE", function_response)
 
         current_conversation.append({
             "role": "user",
-            "content": [
-                {
-                    "type": "tool_result",
-                    "tool_use_id": tool_use_id,
-                    "content": tool_result["content"],
-                    "is_error": tool_result["is_error"]
-                }
-            ]
+            "parts": [function_response]
         })
+         
+        print("IN Tool Use AFTER APPENDING TOOL RESULTS ", current_conversation)
 
+      
         # Update the file_contents dictionary if applicable
         if tool_name in ['create_file', 'edit_and_apply', 'read_file'] and not tool_result["is_error"]:
             if 'path' in tool_input:
                 file_path = tool_input['path']
-                if "File contents updated in system prompt" in tool_result["content"] or \
-                   "File created and added to system prompt" in tool_result["content"] or \
-                   "has been read and stored in the system prompt" in tool_result["content"]:
+                if "File contents updated in system prompt" in tool_result["parts"] or \
+                   "File created and added to system prompt" in tool_result["parts"] or \
+                   "has been read and stored in the system prompt" in tool_result["parts"]:
                     # The file_contents dictionary is already updated in the tool function
                     pass
-
+        
         messages = filtered_conversation_history + current_conversation
-        #print("Before I call Tool Checker", messages)
+        print("MESSAGES BEFFORE CALLING TOOLMODEL", messages)
+         ######################### I AM HERE ###########################33
         try:
-            tool_response = client.messages.create(
-                model=TOOLCHECKERMODEL,
-                max_tokens=8000,
-                system=update_system_prompt(current_iteration, max_iterations),
-                extra_headers={"anthropic-beta": "max-tokens-3-5-sonnet-2024-07-15"},
-                messages=messages,
-                tools=tools,
-                tool_choice={"type": "auto"}
+            gemini_tool_model = genai.GenerativeModel(
+                model_name=GEMINI_MAINMODEL,
+                generation_config=generation_config,
+                tools=[create_folder, create_file, list_files, edit_and_apply, read_multiple_files, tavily_search, get_jira_issue_details],
+                system_instruction=update_system_prompt(current_iteration, max_iterations),
+                
             )
-            # Update token usage for tool checker
-            tool_checker_tokens['input'] += tool_response.usage.input_tokens
-            tool_checker_tokens['output'] += tool_response.usage.output_tokens
 
+            tool_response = gemini_tool_model.generate_content(messages)
+            tool_checker_tokens['input'] += tool_response.usage_metadata.prompt_token_count
+            tool_checker_tokens['output'] += tool_response.usage_metadata.candidates_token_count
+           
             tool_checker_response = ""
-            for tool_content_block in tool_response.content:
-                if tool_content_block.type == "text":
-                    tool_checker_response += tool_content_block.text
-            console.print(Panel(Markdown(tool_checker_response), title="Claude's Response to Tool Result",  title_align="left", border_style="blue", expand=False))
+            for candidate in tool_response.candidates:
+                for part in candidate.content.parts:
+                    tool_checker_response += part.text
+
+            console.print(Panel(Markdown(tool_checker_response), title="Gemini Response to Tool Result",  title_align="left", border_style="blue", expand=False))
             assistant_response += "\n\n" + tool_checker_response
         except APIError as e:
             error_message = f"Error in tool response: {str(e)}"
             console.print(Panel(error_message, title="Error", style="bold red"))
             assistant_response += f"\n\n{error_message}"
-    #print("ASSISTANT RESPONSE VALUE1", assistant_response)
+    print("ASSISTANT RESPONSE VALUE1", assistant_response)
     if assistant_response:
-        current_conversation.append({"role": "assistant", "content": assistant_response})
+        current_conversation.append({"role": "model", "parts": assistant_response})
 
-    conversation_history = messages + [{"role": "assistant", "content": assistant_response}]
+    conversation_history = messages + [{"role": "model", "parts": assistant_response}]
 
     # Display token usage at the end
     display_token_usage()
@@ -1075,10 +1403,10 @@ def display_token_usage():
     table.add_column("Cost ($)", style="red")
 
     model_costs = {
-        "Main Model": {"input": 3.00, "output": 15.00, "has_context": True},
-        "Tool Checker": {"input": 3.00, "output": 15.00, "has_context": False},
-        "Code Editor": {"input": 3.00, "output": 15.00, "has_context": True},
-        "Code Execution": {"input": 3.00, "output": 15.00, "has_context": False}
+        "Main Model": {"input": 0.13, "output": 0.38, "has_context": True},
+        "Tool Checker": {"input": 0.13, "output": 0.38, "has_context": False},
+        "Code Editor": {"input": 0.13, "output": 0.38, "has_context": True},
+        "Code Execution": {"input": 0.13, "output": 0.38, "has_context": False}
     }
 
     total_input = 0
@@ -1132,11 +1460,9 @@ def display_token_usage():
 
     console.print(table)
 
-
-
 async def main():
     global automode, conversation_history
-    console.print(Panel("Welcome to the Turnkey AI Software Engineer with Multi-Agent and Image Support!", title="Welcome", style="bold green"))
+    console.print(Panel("Welcome to the Turnkey Engineer Chat with Multi-Agent and Image Support!", title="Welcome", style="bold green"))
     console.print("Type 'exit' to end the conversation.")
     console.print("Type 'image' to include an image in your message.")
     console.print("Type 'automode [number]' to enter Autonomous mode with a specific number of iterations.")
@@ -1165,7 +1491,7 @@ async def main():
 
             if os.path.isfile(image_path):
                 user_input = await get_user_input("You (prompt for image): ")
-                response, _ = await chat_with_claude(user_input, image_path)
+                response, _ = await chat_with_gemini(user_input, image_path)
             else:
                 console.print(Panel("Invalid image path. Please try again.", title="Error", style="bold red"))
                 continue
@@ -1185,7 +1511,7 @@ async def main():
                 iteration_count = 0
                 try:
                     while automode and iteration_count < max_iterations:
-                        response, exit_continuation = await chat_with_claude(user_input, current_iteration=iteration_count+1, max_iterations=max_iterations)
+                        response, exit_continuation = await chat_with_gemini(user_input, current_iteration=iteration_count+1, max_iterations=max_iterations)
 
                         if exit_continuation or CONTINUATION_EXIT_PHRASE in response:
                             console.print(Panel("Automode completed.", title_align="left", title="Automode", style="green"))
@@ -1211,7 +1537,7 @@ async def main():
 
             console.print(Panel("Exited automode. Returning to regular chat.", style="green"))
         else:
-            response, _ = await chat_with_claude(user_input)
+            response, _ = await chat_with_gemini(user_input)
 
 if __name__ == "__main__":
     asyncio.run(main())
