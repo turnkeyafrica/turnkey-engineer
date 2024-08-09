@@ -1,0 +1,30 @@
+[tool.poetry]
+name = "turnkey-engineer"
+version = "0.1.0"
+description = ""
+authors = ["Your Name <you@example.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+anthropic = "^0.32.0"
+python-dotenv = "^1.0.1"
+tavily-python = "^0.3.5"
+pillow = "^10.4.0"
+rich = "^13.7.1"
+aiohttp = "^3.10.1"
+prompt-toolkit = "^3.0.47"
+langchain = "^0.2.12"
+langchain-google-genai = "^1.0.8"
+jira = "^3.8.0"
+jupyter = "^1.0.0"
+langchain-anthropic = "^0.1.22"
+
+
+[tool.poetry.group.dev.dependencies]
+ruff = "^0.5.6"
+pre-commit = "^3.8.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

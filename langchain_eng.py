@@ -1,21 +1,31 @@
-import os
-from dotenv import load_dotenv
-import json
-from tavily import TavilyClient
-import base64
-from PIL import Image
-import io
-import re
-from anthropic import Anthropic, APIStatusError, APIError
-import difflib
-import time
-from rich.console import Console
-from rich.panel import Panel
-from rich.syntax import Syntax
-from rich.markdown import Markdown
 import asyncio
+import base64
+import difflib
+import io
+import json
+import os
+import re
+import time
+
+from PIL import Image
+from anthropic import APIStatusError, APIError
+from dotenv import load_dotenv
+from jira import JIRA, JIRAError
+from langchain.chat_models import init_chat_model
+from langchain_core.messages import (
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+    BaseMessage,
+)
+from langchain_core.tools import tool
 from prompt_toolkit import PromptSession
 from prompt_toolkit.styles import Style
+from rich.console import Console
+from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.syntax import Syntax
+from tavily import TavilyClient
 
 
 async def get_user_input(prompt="You: "):
@@ -34,7 +44,7 @@ import venv
 import sys
 import signal
 import logging
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Dict, Any, List
 
 
 def setup_virtual_environment() -> Tuple[str, str]:
@@ -59,12 +69,6 @@ def setup_virtual_environment() -> Tuple[str, str]:
 # Load environment variables from .env file
 load_dotenv()
 
-# Initialize the Anthropic client
-anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
-if not anthropic_api_key:
-    raise ValueError("ANTHROPIC_API_KEY not found in environment variables")
-client = Anthropic(api_key=anthropic_api_key)
-
 # Initialize the Tavily client
 tavily_api_key = os.getenv("TAVILY_API_KEY")
 if not tavily_api_key:
@@ -72,7 +76,6 @@ if not tavily_api_key:
 tavily = TavilyClient(api_key=tavily_api_key)
 
 console = Console()
-
 
 # Token tracking variables
 main_model_tokens = {"input": 0, "output": 0}
@@ -106,17 +109,35 @@ CONTINUATION_EXIT_PHRASE = "AUTOMODE_COMPLETE"
 MAX_CONTINUATION_ITERATIONS = 25
 MAX_CONTEXT_TOKENS = 200000  # Reduced to 200k tokens for context window
 
+DEFAULT_MODEL_CONFIG = {
+    "model": "claude-3-5-sonnet-20240620",
+    "model_provider": "anthropic",
+    "max_tokens": 8000,
+    "extra_headers": {"anthropic-beta": "max-tokens-3-5-sonnet-2024-07-15"},
+}
 # Models
 # Models that maintain context memory across interactions
-MAINMODEL = (
-    "claude-3-5-sonnet-20240620"  # Maintains conversation history and file contents
-)
+MAIN_MODEL_CONFIG = {
+    "model": "gemini-1.5-pro",
+    "model_provider": "google_genai",
+}
 
 # Models that don't maintain context (memory is reset after each call)
-TOOLCHECKERMODEL = "claude-3-5-sonnet-20240620"
-CODEEDITORMODEL = "claude-3-5-sonnet-20240620"
-CODEEXECUTIONMODEL = "claude-3-5-sonnet-20240620"
-
+TOOL_CHECKER_CONFIG = {
+    "model": "gemini-1.5-pro",
+    "model_provider": "google_genai",
+}
+CODE_EDITOR_CONFIG = {
+    "model": "gemini-1.5-pro",
+    "model_provider": "google_genai",
+}
+CODE_EXECUTION_CONFIG = {
+    "model": "gemini-1.5-pro",
+    "model_provider": "google_genai",
+}
+llm = init_chat_model(
+    model=DEFAULT_MODEL_CONFIG.get("model"), configurable_fields="any"
+)
 # System prompts
 BASE_SYSTEM_PROMPT = """
 You are Claude, an AI assistant powered by Anthropic's Claude-3.5-Sonnet model, specialized in software development with access to a variety of tools and the ability to instruct and direct a coding agent and a code execution one. Your capabilities include:
@@ -248,7 +269,69 @@ def update_system_prompt(
         )
 
 
-def create_folder(path):
+@tool
+def get_jira_issue_details(issue_key: str) -> str:
+    """
+    Fetch details of a Jira issue, including its description and comments.
+
+    This function takes an issue key as input, retrieves the corresponding Jira issue,
+    and returns a formatted string containing the issue description and comments.
+    If the issue is not found, it returns a message indicating that the issue was not found.
+    If any other error occurs, it returns a generic error message.
+
+    Args:
+        issue_key: The key of the Jira issue.
+
+    Returns:
+        str: A formatted string containing the issue description and comments.
+         If the issue is not found, returns a message indicating that the issue was not found.
+         If any other error occurs, returns a generic error message.
+    """
+    try:
+        # Get credentials from environment variables
+        jira_url = os.getenv("JIRA_URL")
+        username = os.getenv("JIRA_USERNAME")
+        password = os.getenv("JIRA_PASSWORD")
+
+        # Connect to Jira
+        jira = JIRA(jira_url, basic_auth=(username, password))
+
+        # Get the issue
+        issue = jira.issue(issue_key)
+
+        # Get the issue description
+        description = issue.fields.description
+
+        # Get the comments
+        comments = issue.fields.comment.comments
+        comment_texts = [comment.body for comment in comments]
+
+        # Create the formatted string
+        result = f"The description of the issue {issue_key} is: {description}\n"
+        result += "Comments:\n"
+        for i, comment in enumerate(comment_texts, start=1):
+            result += f"Comment {i}: {comment}\n"
+
+        return result
+
+    except JIRAError as e:
+        if e.status_code == 404:
+            return f"Issue {issue_key} not found."
+        else:
+            return f"An error occurred: {e.text}"
+
+
+@tool
+def create_folder(path: str = ".") -> str:
+    """
+    Create a new folder at the specified path. This tool should be used when you need to create a new directory in the project structure. It will create all necessary parent directories if they don't exist. The tool will return a success message if the folder is created or already exists, and an error message if there's a problem creating the folder.
+
+    Args:
+        path: The absolute or relative path where the folder should be created. Use forward slashes (/) for path separation, even on Windows systems.
+
+    Returns:
+        str: A message indicating the success or failure of the folder creation.
+    """
     try:
         os.makedirs(path, exist_ok=True)
         return f"Folder created: {path}"
@@ -256,7 +339,18 @@ def create_folder(path):
         return f"Error creating folder: {str(e)}"
 
 
-def create_file(path, content=""):
+@tool
+def create_file(path: str = ".", content: str = "") -> str:
+    """
+    Create a new file at the specified path with the given content. This tool should be used when you need to create a new file in the project structure. It will create all necessary parent directories if they don't exist. The tool will return a success message if the file is created, and an error message if there's a problem creating the file or if the file already exists. The content should be as complete and useful as possible, including necessary imports, function definitions, and comments.
+
+    Args:
+        path: The absolute or relative path where the file should be created. Use forward slashes (/) for path separation, even on Windows systems.
+        content: The content of the file. This should include all necessary code, comments, and formatting.
+
+    Returns:
+        str: A message indicating the success or failure of the file creation.
+    """
     global file_contents
     try:
         with open(path, "w") as f:
@@ -278,7 +372,7 @@ async def generate_edit_instructions(
     try:
         # Prepare memory context (this is the only part that maintains some context between calls)
         memory_context = "\n".join(
-            [f"Memory {i+1}:\n{mem}" for i, mem in enumerate(code_editor_memory)]
+            [f"Memory {i + 1}:\n{mem}" for i, mem in enumerate(code_editor_memory)]
         )
 
         # Prepare full file contents context, excluding the file being edited if it's already in code_editor_files
@@ -335,28 +429,32 @@ async def generate_edit_instructions(
         """
 
         # Make the API call to CODEEDITORMODEL (context is not maintained except for code_editor_memory)
-        response = client.messages.create(
-            model=CODEEDITORMODEL,
-            max_tokens=8000,
-            system=system_prompt,
-            extra_headers={"anthropic-beta": "max-tokens-3-5-sonnet-2024-07-15"},
-            messages=[
-                {
-                    "role": "user",
-                    "content": "Generate SEARCH/REPLACE blocks for the necessary changes.",
-                }
+        response = llm.invoke(
+            [SystemMessage(content=system_prompt)]
+            + [
+                HumanMessage(
+                    "Generate SEARCH/REPLACE blocks for the necessary changes."
+                )
             ],
+            config={"configurable": CODE_EDITOR_CONFIG},
         )
         # Update token usage for code editor
-        code_editor_tokens["input"] += response.usage.input_tokens
-        code_editor_tokens["output"] += response.usage.output_tokens
+        code_editor_tokens["input"] += response.usage_metadata["input_tokens"]
+        code_editor_tokens["output"] += response.usage_metadata["output_tokens"]
+        if isinstance(response.content, list):
+            content = "\n".join(
+                item["text"] for item in response.content if "text" in item
+            )
+        else:
+            content = response.content
+        response.content = content
 
         # Parse the response to extract SEARCH/REPLACE blocks
-        edit_instructions = parse_search_replace_blocks(response.content[0].text)
+        edit_instructions = parse_search_replace_blocks(response.content)
 
         # Update code editor memory (this is the only part that maintains some context between calls)
         code_editor_memory.append(
-            f"Edit Instructions for {file_path}:\n{response.content[0].text}"
+            f"Edit Instructions for {file_path}:\n{response.content}"
         )
 
         # Add the file to code_editor_files set
@@ -382,10 +480,29 @@ def parse_search_replace_blocks(response_text):
     return json.dumps(blocks)  # Keep returning JSON string
 
 
+@tool
 async def edit_and_apply(
-    path, instructions, project_context, is_automode=False, max_retries=3
+    *,
+    instructions: str,
+    project_context: str,
+    path: str,
+    is_automode: bool = False,
+    max_retries: int = 3,
 ):
+    """
+    Apply AI-powered improvements to a file based on specific instructions and detailed project context. This function reads the file, processes it in batches using AI with conversation history and comprehensive code-related project context. It generates a diff and allows the user to confirm changes before applying them. The goal is to maintain consistency and prevent breaking connections between files. This tool should be used for complex code modifications that require understanding of the broader project context.
+
+    Args:
+        path: The absolute or relative path of the file to edit. Use forward slashes (/) for path separation, even on Windows systems.
+        instructions: After completing the code review, construct a plan for the change between <PLANNING> tags. Ask for additional source files or documentation that may be relevant. The plan should avoid duplication (DRY principle), and balance maintenance and flexibility. Present trade-offs and implementation choices at this step. Consider available Frameworks and Libraries and suggest their use when relevant. STOP at this step if we have not agreed a plan.
+                    Once agreed, produce code between <OUTPUT> tags. Pay attention to Variable Names, Identifiers and String Literals, and check that they are reproduced accurately from the original source files unless otherwise directed. When naming by convention surround in double colons and in ::UPPERCASE::. Maintain existing code style, use language appropriate idioms. Produce Code Blocks with the language specified after the first backticks
+        project_context: Comprehensive context about the project, including recent changes, new variables or functions, interconnections between files, coding standards, and any other relevant information that might affect the edit.
+
+    Returns:
+    str: A message indicating the success or failure of applying changes to the file.
+    """
     global file_contents
+    print("In Edit and Apply Function")
     try:
         original_content = file_contents.get(path, "")
         if not original_content:
@@ -462,7 +579,27 @@ async def edit_and_apply(
         return f"Error editing/applying to file: {str(e)}"
 
 
-async def apply_edits(file_path, edit_instructions, original_content):
+async def apply_edits(
+    file_path: str, edit_instructions: str, original_content: str
+) -> Tuple[str, bool, str]:
+    """
+    Apply a series of edits to a file based on the provided edit instructions.
+
+    This function iterates through the edit instructions, searches for the specified content in the file,
+    and replaces it with the new content. It uses a progress bar to display the progress of the edits.
+    If a search content is not found in the file, it is considered a failed edit. The function returns
+    the edited content, a boolean indicating whether any changes were made, and a string containing
+    the details of any failed edits.
+
+    Parameters:
+    file_path (str): The path to the file to edit.
+    edit_instructions (str): A list of edit instructions, each containing a 'search' and 'replace' field.
+    original_content (str): The original content of the file.
+
+    Returns:
+    Tuple[str, bool, str]: A tuple containing the edited content, a boolean indicating whether any changes
+                           were made, and a string containing the details of any failed edits.
+    """
     changes_made = False
     edited_content = original_content
     total_edits = len(edit_instructions)
@@ -552,7 +689,21 @@ def generate_diff(original, new, path):
     return highlighted_diff
 
 
-async def execute_code(code, timeout=10):
+@tool
+async def execute_code(code: str, timeout: int = 10):
+    """
+    Execute Python code in the 'code_execution_env' virtual environment and return the output. This tool should be used when you need to run code and see its output or check for errors. All code execution happens exclusively in this isolated environment. The tool will return the standard output, standard error, and return code of the executed code. Long-running processes will return a process ID for later management.
+
+    Args:
+        code: The Python code to execute in the 'code_execution_env' virtual environment. Include all necessary imports and ensure the code is complete and self-contained.
+        timeout: The maximum time to wait for the code execution to complete. Defaults to 10 seconds.
+
+    Returns:
+        tuple: A tuple containing the process ID and the execution result. The execution result is a
+           string that includes the process ID, standard output, standard error, and return code.
+           If the code execution times out, the standard output will indicate that the process
+           is still running in the background.
+    """
     global running_processes
     venv_path, activate_script = setup_virtual_environment()
 
@@ -597,7 +748,17 @@ async def execute_code(code, timeout=10):
     return process_id, execution_result
 
 
-def read_file(path):
+@tool
+def read_file(path: str = ".") -> str:
+    """
+    Read the contents of a file at the specified path. This tool should be used when you need to examine the contents of an existing file. It will return the entire contents of the file as a string. If the file doesn't exist or can't be read, an appropriate error message will be returned.
+
+    Args:
+        The absolute or relative path of the file to read. Use forward slashes (/) for path separation, even on Windows systems.
+
+    Returns:
+        str: A string containing the contents of the file, or an error message if the file doesn't exist or can't be read.
+    """
     global file_contents
     try:
         with open(path, "r") as f:
@@ -608,7 +769,17 @@ def read_file(path):
         return f"Error reading file: {str(e)}"
 
 
-def read_multiple_files(paths):
+@tool
+def read_multiple_files(paths: List[str]):
+    """
+    Read the contents of multiple files at the specified paths. This tool should be used when you need to examine the contents of multiple existing files at once. It will return the status of reading each file, and store the contents of successfully read files in the system prompt. If a file doesn't exist or can't be read, an appropriate error message will be returned for that file.
+
+    Args:
+        paths: An array of absolute or relative paths of the files to read. Use forward slashes (/) for path separation, even on Windows systems.
+
+    Returns:
+        str: A string containing the results of reading each file, separated by newlines.
+    """
     global file_contents
     results = []
     for path in paths:
@@ -624,7 +795,18 @@ def read_multiple_files(paths):
     return "\n".join(results)
 
 
-def list_files(path="."):
+@tool
+def list_files(path: str):
+    """
+    List all files and directories in the specified folder. This tool should be used when you need to see the contents of a directory. It will return a list of all files and subdirectories in the specified path. If the directory doesn't exist or can't be read, an appropriate error message will be returned.
+
+    Args:
+        path: The absolute or relative path of the folder to list. Use forward slashes (/) for path separation, even on Windows systems. If not provided, the current working directory will be used.
+
+    Returns:
+        str: A string containing the names of all files and directories in the specified path, separated by newlines.
+         If an error occurs, returns an error message.
+    """
     try:
         files = os.listdir(path)
         return "\n".join(files)
@@ -632,7 +814,18 @@ def list_files(path="."):
         return f"Error listing files: {str(e)}"
 
 
-def tavily_search(query):
+@tool
+def tavily_search(query: str):
+    """
+    Perform a web search using the Tavily API to get up-to-date information or additional context. This tool should be used when you need current information or feel a search could provide a better answer to the user's query. It will return a summary of the search results, including relevant snippets and source URLs.
+
+    Args:
+        query: The search query. Be as specific and detailed as possible to get the most relevant results.
+
+    Returns:
+        str: The response from the Tavily API, which includes a summary of the search results. If an error occurs,
+         the function returns an error message.
+    """
     try:
         response = tavily.qna_search(query=query, search_depth="advanced")
         return response
@@ -640,7 +833,17 @@ def tavily_search(query):
         return f"Error performing search: {str(e)}"
 
 
-def stop_process(process_id):
+@tool
+def stop_process(process_id: int):
+    """
+    Stop a running process by its ID. This tool should be used to terminate long-running processes that were started by the execute_code tool. It will attempt to stop the process gracefully, but may force termination if necessary. The tool will return a success message if the process is stopped, and an error message if the process doesn't exist or can't be stopped.
+
+    Args:
+        process_id: The ID of the process to stop, as returned by the execute_code tool for long-running processes.
+
+    Returns:
+        str: A message indicating the success or failure of stopping the process.
+    """
     global running_processes
     if process_id in running_processes:
         process = running_processes[process_id]
@@ -655,177 +858,31 @@ def stop_process(process_id):
 
 
 tools = [
-    {
-        "name": "create_folder",
-        "description": "Create a new folder at the specified path. This tool should be used when you need to create a new directory in the project structure. It will create all necessary parent directories if they don't exist. The tool will return a success message if the folder is created or already exists, and an error message if there's a problem creating the folder.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "The absolute or relative path where the folder should be created. Use forward slashes (/) for path separation, even on Windows systems.",
-                }
-            },
-            "required": ["path"],
-        },
-    },
-    {
-        "name": "create_file",
-        "description": "Create a new file at the specified path with the given content. This tool should be used when you need to create a new file in the project structure. It will create all necessary parent directories if they don't exist. The tool will return a success message if the file is created, and an error message if there's a problem creating the file or if the file already exists. The content should be as complete and useful as possible, including necessary imports, function definitions, and comments.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "The absolute or relative path where the file should be created. Use forward slashes (/) for path separation, even on Windows systems.",
-                },
-                "content": {
-                    "type": "string",
-                    "description": "The content of the file. This should include all necessary code, comments, and formatting.",
-                },
-            },
-            "required": ["path", "content"],
-        },
-    },
-    {
-        "name": "edit_and_apply",
-        "description": "Apply AI-powered improvements to a file based on specific instructions and detailed project context. This function reads the file, processes it in batches using AI with conversation history and comprehensive code-related project context. It generates a diff and allows the user to confirm changes before applying them. The goal is to maintain consistency and prevent breaking connections between files. This tool should be used for complex code modifications that require understanding of the broader project context.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "The absolute or relative path of the file to edit. Use forward slashes (/) for path separation, even on Windows systems.",
-                },
-                "instructions": {
-                    "type": "string",
-                    "description": "After completing the code review, construct a plan for the change between <PLANNING> tags. Ask for additional source files or documentation that may be relevant. The plan should avoid duplication (DRY principle), and balance maintenance and flexibility. Present trade-offs and implementation choices at this step. Consider available Frameworks and Libraries and suggest their use when relevant. STOP at this step if we have not agreed a plan.\n\nOnce agreed, produce code between <OUTPUT> tags. Pay attention to Variable Names, Identifiers and String Literals, and check that they are reproduced accurately from the original source files unless otherwise directed. When naming by convention surround in double colons and in ::UPPERCASE::. Maintain existing code style, use language appropriate idioms. Produce Code Blocks with the language specified after the first backticks",
-                },
-                "project_context": {
-                    "type": "string",
-                    "description": "Comprehensive context about the project, including recent changes, new variables or functions, interconnections between files, coding standards, and any other relevant information that might affect the edit.",
-                },
-            },
-            "required": ["path", "instructions", "project_context"],
-        },
-    },
-    {
-        "name": "execute_code",
-        "description": "Execute Python code in the 'code_execution_env' virtual environment and return the output. This tool should be used when you need to run code and see its output or check for errors. All code execution happens exclusively in this isolated environment. The tool will return the standard output, standard error, and return code of the executed code. Long-running processes will return a process ID for later management.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "code": {
-                    "type": "string",
-                    "description": "The Python code to execute in the 'code_execution_env' virtual environment. Include all necessary imports and ensure the code is complete and self-contained.",
-                }
-            },
-            "required": ["code"],
-        },
-    },
-    {
-        "name": "stop_process",
-        "description": "Stop a running process by its ID. This tool should be used to terminate long-running processes that were started by the execute_code tool. It will attempt to stop the process gracefully, but may force termination if necessary. The tool will return a success message if the process is stopped, and an error message if the process doesn't exist or can't be stopped.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "process_id": {
-                    "type": "string",
-                    "description": "The ID of the process to stop, as returned by the execute_code tool for long-running processes.",
-                }
-            },
-            "required": ["process_id"],
-        },
-    },
-    {
-        "name": "read_file",
-        "description": "Read the contents of a file at the specified path. This tool should be used when you need to examine the contents of an existing file. It will return the entire contents of the file as a string. If the file doesn't exist or can't be read, an appropriate error message will be returned.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "The absolute or relative path of the file to read. Use forward slashes (/) for path separation, even on Windows systems.",
-                }
-            },
-            "required": ["path"],
-        },
-    },
-    {
-        "name": "read_multiple_files",
-        "description": "Read the contents of multiple files at the specified paths. This tool should be used when you need to examine the contents of multiple existing files at once. It will return the status of reading each file, and store the contents of successfully read files in the system prompt. If a file doesn't exist or can't be read, an appropriate error message will be returned for that file.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "paths": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "An array of absolute or relative paths of the files to read. Use forward slashes (/) for path separation, even on Windows systems.",
-                }
-            },
-            "required": ["paths"],
-        },
-    },
-    {
-        "name": "list_files",
-        "description": "List all files and directories in the specified folder. This tool should be used when you need to see the contents of a directory. It will return a list of all files and subdirectories in the specified path. If the directory doesn't exist or can't be read, an appropriate error message will be returned.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "The absolute or relative path of the folder to list. Use forward slashes (/) for path separation, even on Windows systems. If not provided, the current working directory will be used.",
-                }
-            },
-        },
-    },
-    {
-        "name": "tavily_search",
-        "description": "Perform a web search using the Tavily API to get up-to-date information or additional context. This tool should be used when you need current information or feel a search could provide a better answer to the user's query. It will return a summary of the search results, including relevant snippets and source URLs.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "The search query. Be as specific and detailed as possible to get the most relevant results.",
-                }
-            },
-            "required": ["query"],
-        },
-    },
+    create_folder,
+    create_file,
+    edit_and_apply,
+    execute_code,
+    stop_process,
+    read_file,
+    read_multiple_files,
+    list_files,
+    tavily_search,
+    get_jira_issue_details,
 ]
+tools_map = {t.name: t for t in tools}
 
-from typing import Dict, Any
 
-
-async def execute_tool(tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, Any]:
+async def call_tools(tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, Any]:
     try:
         result = None
         is_error = False
-
-        if tool_name == "create_folder":
-            result = create_folder(tool_input["path"])
-        elif tool_name == "create_file":
-            result = create_file(tool_input["path"], tool_input.get("content", ""))
-        elif tool_name == "edit_and_apply":
-            result = await edit_and_apply(
-                tool_input["path"],
-                tool_input["instructions"],
-                tool_input["project_context"],
-                is_automode=automode,
-            )
-        elif tool_name == "read_file":
-            result = read_file(tool_input["path"])
-        elif tool_name == "read_multiple_files":
-            result = read_multiple_files(tool_input["paths"])
-        elif tool_name == "list_files":
-            result = list_files(tool_input.get("path", "."))
-        elif tool_name == "tavily_search":
-            result = tavily_search(tool_input["query"])
-        elif tool_name == "stop_process":
-            result = stop_process(tool_input["process_id"])
+        if tool_name == "edit_and_apply":
+            tool_input["is_automode"] = automode
+            result = await tools_map[tool_name].ainvoke(tool_input)
         elif tool_name == "execute_code":
-            process_id, execution_result = await execute_code(tool_input["code"])
+            process_id, execution_result = await tools_map[tool_name].ainvoke(
+                tool_input
+            )
             analysis_task = asyncio.create_task(
                 send_to_ai_for_executing(tool_input["code"], execution_result)
             )
@@ -834,8 +891,8 @@ async def execute_tool(tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, 
             if process_id in running_processes:
                 result += "\n\nNote: The process is still running in the background."
         else:
-            is_error = True
-            result = f"Unknown tool: {tool_name}"
+            result = tools_map[tool_name].invoke(tool_input)
+            is_error = False
 
         return {"content": result, "is_error": is_error}
     except KeyError as e:
@@ -890,24 +947,29 @@ async def send_to_ai_for_executing(code, execution_result):
 
         IMPORTANT: PROVIDE ONLY YOUR ANALYSIS AND OBSERVATIONS. DO NOT INCLUDE ANY PREFACING STATEMENTS OR EXPLANATIONS OF YOUR ROLE.
         """
-
-        response = client.messages.create(
-            model=CODEEXECUTIONMODEL,
-            max_tokens=2000,
-            system=system_prompt,
-            messages=[
-                {
-                    "role": "user",
-                    "content": f"Analyze this code execution from the 'code_execution_env' virtual environment:\n\nCode:\n{code}\n\nExecution Result:\n{execution_result}",
-                }
+        response = llm.invoke(
+            [SystemMessage(content=system_prompt)]
+            + [
+                HumanMessage(
+                    f"Analyze this code execution from the 'code_execution_env' virtual environment:\n\nCode:\n{code}\n\nExecution Result:\n{execution_result}",
+                )
             ],
+            config={"configurable": CODE_EXECUTION_CONFIG},
         )
 
         # Update token usage for code execution
-        code_execution_tokens["input"] += response.usage.input_tokens
-        code_execution_tokens["output"] += response.usage.output_tokens
+        code_execution_tokens["input"] += response.usage_metadata["input_tokens"]
+        code_execution_tokens["output"] += response.usage_metadata["output_tokens"]
 
-        analysis = response.content[0].text
+        if isinstance(response.content, list):
+            content = "\n".join(
+                item["text"] for item in response.content if "text" in item
+            )
+        else:
+            content = response.content
+        response.content = content
+
+        analysis = response.content
 
         return analysis
 
@@ -921,28 +983,22 @@ async def send_to_ai_for_executing(code, execution_result):
 def save_chat():
     # Generate filename
     now = datetime.datetime.now()
-    filename = f"Chat_{now.strftime('%H%M')}.md"
+    filename = f"Chat_{now.strftime('%H%M')}"
+    with open(f"{filename}.json", "w") as f:
+        f.write(dump_message(conversation_history))
+    filename += ".md"
 
     # Format conversation history
     formatted_chat = "# TurnQuest AI Engineer Chat Log\n\n"
     for message in conversation_history:
-        if message["role"] == "user":
-            formatted_chat += f"## User\n\n{message['content']}\n\n"
-        elif message["role"] == "assistant":
-            if isinstance(message["content"], str):
-                formatted_chat += f"## Claude\n\n{message['content']}\n\n"
-            elif isinstance(message["content"], list):
-                for content in message["content"]:
-                    if content["type"] == "tool_use":
-                        formatted_chat += f"### Tool Use: {content['name']}\n\n```json\n{json.dumps(content['input'], indent=2)}\n```\n\n"
-                    elif content["type"] == "text":
-                        formatted_chat += f"## Claude\n\n{content['text']}\n\n"
-        elif message["role"] == "user" and isinstance(message["content"], list):
-            for content in message["content"]:
-                if content["type"] == "tool_result":
-                    formatted_chat += (
-                        f"### Tool Result\n\n```\n{content['content']}\n```\n\n"
-                    )
+        if message.type == "human":
+            formatted_chat += f"## User\n\n{message.content}\n\n"
+        elif message.type == "ai":
+            formatted_chat += f"## AI Engineer\n\n{message.content}\n\n"
+            for t in message.tool_calls:
+                formatted_chat += f"### Tool Use: \nid: `{t['id']}`\n{t['name']}\n\n```json\n{json.dumps(t['args'], indent=2)}\n```\n\n"
+        elif message.type == "tool":
+            formatted_chat += f"### Tool Result\nid:`{message.tool_call_id}`)\n\n```\n{message.content}\n```\n\n"
 
     # Save to file
     with open(filename, "w", encoding="utf-8") as f:
@@ -983,21 +1039,15 @@ async def chat_with_claude(
                 "I'm sorry, there was an error processing the image. Please try again.",
                 False,
             )
-
-        image_message = {
-            "role": "user",
-            "content": [
-                {
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": "image/jpeg",
-                        "data": image_base64,
-                    },
-                },
+        image_message = HumanMessage(
+            content=[
                 {"type": "text", "text": f"User input for image: {user_input}"},
-            ],
-        }
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"},
+                },
+            ]
+        )
         current_conversation.append(image_message)
         console.print(
             Panel(
@@ -1008,15 +1058,16 @@ async def chat_with_claude(
             )
         )
     else:
-        current_conversation.append({"role": "user", "content": user_input})
+        current_conversation.append(HumanMessage(user_input))
 
     # Filter conversation history to maintain context
     filtered_conversation_history = []
     for message in conversation_history:
-        if isinstance(message["content"], list):
+        assert not isinstance(message.content, list)
+        if isinstance(message.content, list):
             filtered_content = [
                 content
-                for content in message["content"]
+                for content in message.content
                 if content.get("type") != "tool_result"
                 or (
                     content.get("type") == "tool_result"
@@ -1041,21 +1092,20 @@ async def chat_with_claude(
     messages = filtered_conversation_history + current_conversation
     current_prompt = update_system_prompt(current_iteration, max_iterations)
     # print("CURRENT PROMPT", current_prompt)
+    # print("Before calling main model", messages)
     try:
         # MAINMODEL call, which maintains context
-        response = client.messages.create(
-            model=MAINMODEL,
-            max_tokens=8000,
-            system=update_system_prompt(current_iteration, max_iterations),
-            extra_headers={"anthropic-beta": "max-tokens-3-5-sonnet-2024-07-15"},
-            messages=messages,
-            tools=tools,
-            tool_choice={"type": "auto"},
+        response = llm.bind_tools(tools).invoke(
+            [SystemMessage(content=current_prompt)] + messages,
+            config={"configurable": MAIN_MODEL_CONFIG},
         )
         # Update token usage for MAINMODEL
-        main_model_tokens["input"] += response.usage.input_tokens
-        main_model_tokens["output"] += response.usage.output_tokens
+        main_model_tokens["input"] += response.usage_metadata["input_tokens"]
+        main_model_tokens["output"] += response.usage_metadata["output_tokens"]
     except APIStatusError as e:
+        with open("main_model_error_log.txt", "a") as f:
+            f.write(f"# {datetime.datetime.now()}\n\n")
+            f.write(dump_message(messages))
         if e.status_code == 429:
             console.print(
                 Panel(
@@ -1077,6 +1127,9 @@ async def chat_with_claude(
                 False,
             )
     except APIError as e:
+        with open("main_model_error_log.txt", "a") as f:
+            f.write(f"# {datetime.datetime.now()}\n\n")
+            f.write(dump_message(messages))
         console.print(
             Panel(f"API Error: {str(e)}", title="API Error", style="bold red")
         )
@@ -1087,15 +1140,17 @@ async def chat_with_claude(
 
     assistant_response = ""
     exit_continuation = False
-    tool_uses = []
-    # print("RESPONSE CONTENT", response.content)
-    for content_block in response.content:
-        if content_block.type == "text":
-            assistant_response += content_block.text
-            if CONTINUATION_EXIT_PHRASE in content_block.text:
-                exit_continuation = True
-        elif content_block.type == "tool_use":
-            tool_uses.append(content_block)
+    tool_uses = [t for t in response.tool_calls]
+    if isinstance(response.content, list):
+        content = "\n".join(item["text"] for item in response.content if "text" in item)
+    else:
+        content = response.content
+    response.content = content
+    assistant_response += response.content
+    assert isinstance(response.content, str)
+
+    if CONTINUATION_EXIT_PHRASE in response.content:
+        exit_continuation = True
 
     console.print(
         Panel(
@@ -1121,18 +1176,19 @@ async def chat_with_claude(
             expand=False,
         )
     )
+    current_conversation.append(response)
     # print("TOOL USES", tool_uses)
     for tool_use in tool_uses:
-        tool_name = tool_use.name
-        tool_input = tool_use.input
-        tool_use_id = tool_use.id
+        tool_name = tool_use["name"]
+        tool_input = tool_use["args"]
+        tool_use_id = tool_use["id"]
         # print("TOOL input", tool_input)
         console.print(Panel(f"Tool Used: {tool_name}", style="green"))
         console.print(
             Panel(f"Tool Input: {json.dumps(tool_input, indent=2)}", style="green")
         )
 
-        tool_result = await execute_tool(tool_name, tool_input)
+        tool_result = await call_tools(tool_name, tool_input)
 
         if tool_result["is_error"]:
             console.print(
@@ -1151,33 +1207,8 @@ async def chat_with_claude(
                     style="green",
                 )
             )
-
         current_conversation.append(
-            {
-                "role": "assistant",
-                "content": [
-                    {
-                        "type": "tool_use",
-                        "id": tool_use_id,
-                        "name": tool_name,
-                        "input": tool_input,
-                    }
-                ],
-            }
-        )
-
-        current_conversation.append(
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": tool_use_id,
-                        "content": tool_result["content"],
-                        "is_error": tool_result["is_error"],
-                    }
-                ],
-            }
+            ToolMessage(tool_result["content"], tool_call_id=tool_use_id)
         )
 
         # Update the file_contents dictionary if applicable
@@ -1198,25 +1229,33 @@ async def chat_with_claude(
                     pass
 
         messages = filtered_conversation_history + current_conversation
-        # print("Before I call Tool Checker", messages)
+        # print("Before calling main model", messages)
         try:
-            tool_response = client.messages.create(
-                model=TOOLCHECKERMODEL,
-                max_tokens=8000,
-                system=update_system_prompt(current_iteration, max_iterations),
-                extra_headers={"anthropic-beta": "max-tokens-3-5-sonnet-2024-07-15"},
-                messages=messages,
-                tools=tools,
-                tool_choice={"type": "auto"},
+            tool_response = llm.bind_tools(tools).invoke(
+                [
+                    SystemMessage(
+                        content=update_system_prompt(current_iteration, max_iterations)
+                    )
+                ]
+                + messages,
+                config={"configurable": TOOL_CHECKER_CONFIG},
             )
-            # Update token usage for tool checker
-            tool_checker_tokens["input"] += tool_response.usage.input_tokens
-            tool_checker_tokens["output"] += tool_response.usage.output_tokens
+            tool_checker_tokens["input"] += tool_response.usage_metadata["input_tokens"]
+            tool_checker_tokens["output"] += tool_response.usage_metadata[
+                "output_tokens"
+            ]
 
-            tool_checker_response = ""
-            for tool_content_block in tool_response.content:
-                if tool_content_block.type == "text":
-                    tool_checker_response += tool_content_block.text
+            if isinstance(tool_response.content, list):
+                content: str = "\n".join(
+                    item["text"] for item in tool_response.content if "text" in item
+                )
+            else:
+                content: str = tool_response.content
+            tool_response.content = content
+            # remove any request tool calls
+            tool_response.tool_calls = []
+            tool_checker_response = tool_response.content
+            current_conversation.append(tool_response)
             console.print(
                 Panel(
                     Markdown(tool_checker_response),
@@ -1229,17 +1268,14 @@ async def chat_with_claude(
             assistant_response += "\n\n" + tool_checker_response
         except APIError as e:
             error_message = f"Error in tool response: {str(e)}"
+            with open("tool_checker_error_log.txt", "a") as f:
+                f.write(f"# {datetime.datetime.now()}\n\n")
+                f.write(dump_message(messages))
             console.print(Panel(error_message, title="Error", style="bold red"))
             assistant_response += f"\n\n{error_message}"
     # print("ASSISTANT RESPONSE VALUE1", assistant_response)
-    if assistant_response:
-        current_conversation.append(
-            {"role": "assistant", "content": assistant_response}
-        )
 
-    conversation_history = messages + [
-        {"role": "assistant", "content": assistant_response}
-    ]
+    conversation_history = messages
 
     # Display token usage at the end
     display_token_usage()
@@ -1536,6 +1572,16 @@ async def main():
             )
         else:
             response, _ = await chat_with_claude(user_input)
+
+
+def dump_message(message: list):
+    msgs = []
+    for m in message:
+        if isinstance(m, BaseMessage):
+            msgs.append(m.dict())
+        else:
+            msgs.append(dict(m))
+    return json.dumps(msgs)
 
 
 if __name__ == "__main__":
