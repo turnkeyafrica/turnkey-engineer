@@ -10,6 +10,7 @@ import time
 from PIL import Image
 from anthropic import APIStatusError, APIError
 from dotenv import load_dotenv
+from google.api_core.exceptions import GoogleAPIError
 from jira import JIRA, JIRAError
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import (
@@ -19,6 +20,7 @@ from langchain_core.messages import (
     BaseMessage,
 )
 from langchain_core.tools import tool
+from langchain_google_genai._function_utils import tool_to_dict, convert_to_genai_function_declarations
 from prompt_toolkit import PromptSession
 from prompt_toolkit.styles import Style
 from rich.console import Console
@@ -27,7 +29,8 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 from tavily import TavilyClient
 
-
+APIStatusError = (APIStatusError, GoogleAPIError)
+APIError = (APIError, GoogleAPIError)
 async def get_user_input(prompt="You: "):
     style = Style.from_dict(
         {
@@ -118,13 +121,13 @@ DEFAULT_MODEL_CONFIG = {
 # Models
 # Models that maintain context memory across interactions
 MAIN_MODEL_CONFIG = {
-    "model": "gemini-1.5-pro",
+    "model": "gemini-1.5-flash",
     "model_provider": "google_genai",
 }
 
 # Models that don't maintain context (memory is reset after each call)
 TOOL_CHECKER_CONFIG = {
-    "model": "gemini-1.5-pro",
+    "model": "gemini-1.5-flash",
     "model_provider": "google_genai",
 }
 CODE_EDITOR_CONFIG = {
@@ -132,7 +135,7 @@ CODE_EDITOR_CONFIG = {
     "model_provider": "google_genai",
 }
 CODE_EXECUTION_CONFIG = {
-    "model": "gemini-1.5-pro",
+    "model": "gemini-1.5-flash",
     "model_provider": "google_genai",
 }
 llm = init_chat_model(
@@ -870,7 +873,7 @@ tools = [
     get_jira_issue_details,
 ]
 tools_map = {t.name: t for t in tools}
-
+gemai_tools = [tool_to_dict(convert_to_genai_function_declarations(tools))]
 
 async def call_tools(tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, Any]:
     try:
@@ -1095,7 +1098,7 @@ async def chat_with_claude(
     # print("Before calling main model", messages)
     try:
         # MAINMODEL call, which maintains context
-        response = llm.bind_tools(tools).invoke(
+        response = llm.bind_tools(gemai_tools).invoke(
             [SystemMessage(content=current_prompt)] + messages,
             config={"configurable": MAIN_MODEL_CONFIG},
         )
@@ -1229,9 +1232,9 @@ async def chat_with_claude(
                     pass
 
         messages = filtered_conversation_history + current_conversation
-        # print("Before calling main model", messages)
+        # print("Before calling tool checker model", messages)
         try:
-            tool_response = llm.bind_tools(tools).invoke(
+            tool_response = llm.bind_tools(gemai_tools).invoke(
                 [
                     SystemMessage(
                         content=update_system_prompt(current_iteration, max_iterations)

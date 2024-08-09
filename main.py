@@ -14,23 +14,20 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.markdown import Markdown
 import asyncio
+import aiohttp
 from prompt_toolkit import PromptSession
 from prompt_toolkit.styles import Style
 
-
 async def get_user_input(prompt="You: "):
-    style = Style.from_dict(
-        {
-            "prompt": "cyan bold",
-        }
-    )
+    style = Style.from_dict({
+        'prompt': 'cyan bold',
+    })
     session = PromptSession(style=style)
     return await session.prompt_async(prompt, multiline=False)
-
-
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
 import datetime
 import venv
+import subprocess
 import sys
 import signal
 import logging
@@ -43,13 +40,13 @@ def setup_virtual_environment() -> Tuple[str, str]:
     try:
         if not os.path.exists(venv_path):
             venv.create(venv_path, with_pip=True)
-
+        
         # Activate the virtual environment
         if sys.platform == "win32":
             activate_script = os.path.join(venv_path, "Scripts", "activate.bat")
         else:
             activate_script = os.path.join(venv_path, "bin", "activate")
-
+        
         return venv_path, activate_script
     except Exception as e:
         logging.error(f"Error setting up virtual environment: {str(e)}")
@@ -75,10 +72,10 @@ console = Console()
 
 
 # Token tracking variables
-main_model_tokens = {"input": 0, "output": 0}
-tool_checker_tokens = {"input": 0, "output": 0}
-code_editor_tokens = {"input": 0, "output": 0}
-code_execution_tokens = {"input": 0, "output": 0}
+main_model_tokens = {'input': 0, 'output': 0}
+tool_checker_tokens = {'input': 0, 'output': 0}
+code_editor_tokens = {'input': 0, 'output': 0}
+code_execution_tokens = {'input': 0, 'output': 0}
 
 # Set up the conversation memory (maintains context for MAINMODEL)
 conversation_history = []
@@ -108,9 +105,7 @@ MAX_CONTEXT_TOKENS = 200000  # Reduced to 200k tokens for context window
 
 # Models
 # Models that maintain context memory across interactions
-MAINMODEL = (
-    "claude-3-5-sonnet-20240620"  # Maintains conversation history and file contents
-)
+MAINMODEL = "claude-3-5-sonnet-20240620"  # Maintains conversation history and file contents
 
 # Models that don't maintain context (memory is reset after each call)
 TOOLCHECKERMODEL = "claude-3-5-sonnet-20240620"
@@ -216,37 +211,25 @@ Remember: Focus on completing the established goals efficiently and effectively.
 """
 
 
-def update_system_prompt(
-    current_iteration: Optional[int] = None, max_iterations: Optional[int] = None
-) -> str:
+def update_system_prompt(current_iteration: Optional[int] = None, max_iterations: Optional[int] = None) -> str:
     global file_contents
     chain_of_thought_prompt = """
     Answer the user's request using relevant tools (if they are available). Before calling a tool, do some analysis within <thinking></thinking> tags. First, think about which of the provided tools is the relevant tool to answer the user's request. Second, go through each of the required parameters of the relevant tool and determine if the user has directly provided or given enough information to infer a value. When deciding if the parameter can be inferred, carefully consider all the context to see if it supports a specific value. If all of the required parameters are present or can be reasonably inferred, close the thinking tag and proceed with the tool call. BUT, if one of the values for a required parameter is missing, DO NOT invoke the function (not even with fillers for the missing params) and instead, ask the user to provide the missing parameters. DO NOT ask for more information on optional parameters if it is not provided.
 
     Do not reflect on the quality of the returned search results in your response.
     """
-
+    
     file_contents_prompt = "\n\nFile Contents:\n"
     for path, content in file_contents.items():
         file_contents_prompt += f"\n--- {path} ---\n{content}\n"
-
+    
     if automode:
         iteration_info = ""
         if current_iteration is not None and max_iterations is not None:
             iteration_info = f"You are currently on iteration {current_iteration} out of {max_iterations} in automode."
-        return (
-            BASE_SYSTEM_PROMPT
-            + file_contents_prompt
-            + "\n\n"
-            + AUTOMODE_SYSTEM_PROMPT.format(iteration_info=iteration_info)
-            + "\n\n"
-            + chain_of_thought_prompt
-        )
+        return BASE_SYSTEM_PROMPT + file_contents_prompt + "\n\n" + AUTOMODE_SYSTEM_PROMPT.format(iteration_info=iteration_info) + "\n\n" + chain_of_thought_prompt
     else:
-        return (
-            BASE_SYSTEM_PROMPT + file_contents_prompt + "\n\n" + chain_of_thought_prompt
-        )
-
+        return BASE_SYSTEM_PROMPT + file_contents_prompt + "\n\n" + chain_of_thought_prompt
 
 def create_folder(path):
     try:
@@ -255,40 +238,31 @@ def create_folder(path):
     except Exception as e:
         return f"Error creating folder: {str(e)}"
 
-
 def create_file(path, content=""):
     global file_contents
     try:
-        with open(path, "w") as f:
+        with open(path, 'w') as f:
             f.write(content)
         file_contents[path] = content
         return f"File created and added to system prompt: {path}"
     except Exception as e:
         return f"Error creating file: {str(e)}"
 
-
 def highlight_diff(diff_text):
     return Syntax(diff_text, "diff", theme="monokai", line_numbers=True)
 
 
-async def generate_edit_instructions(
-    file_path, file_content, instructions, project_context, full_file_contents
-):
+async def generate_edit_instructions(file_path, file_content, instructions, project_context, full_file_contents):
     global code_editor_tokens, code_editor_memory, code_editor_files
     try:
         # Prepare memory context (this is the only part that maintains some context between calls)
-        memory_context = "\n".join(
-            [f"Memory {i+1}:\n{mem}" for i, mem in enumerate(code_editor_memory)]
-        )
+        memory_context = "\n".join([f"Memory {i+1}:\n{mem}" for i, mem in enumerate(code_editor_memory)])
 
         # Prepare full file contents context, excluding the file being edited if it's already in code_editor_files
-        full_file_contents_context = "\n\n".join(
-            [
-                f"--- {path} ---\n{content}"
-                for path, content in full_file_contents.items()
-                if path != file_path or path not in code_editor_files
-            ]
-        )
+        full_file_contents_context = "\n\n".join([
+            f"--- {path} ---\n{content}" for path, content in full_file_contents.items()
+            if path != file_path or path not in code_editor_files
+        ])
 
         system_prompt = f"""
         You are an AI coding agent that generates edit instructions for code files. Your task is to analyze the provided code and generate SEARCH/REPLACE blocks for necessary changes. Follow these steps:
@@ -341,23 +315,18 @@ async def generate_edit_instructions(
             system=system_prompt,
             extra_headers={"anthropic-beta": "max-tokens-3-5-sonnet-2024-07-15"},
             messages=[
-                {
-                    "role": "user",
-                    "content": "Generate SEARCH/REPLACE blocks for the necessary changes.",
-                }
-            ],
+                {"role": "user", "content": "Generate SEARCH/REPLACE blocks for the necessary changes."}
+            ]
         )
         # Update token usage for code editor
-        code_editor_tokens["input"] += response.usage.input_tokens
-        code_editor_tokens["output"] += response.usage.output_tokens
+        code_editor_tokens['input'] += response.usage.input_tokens
+        code_editor_tokens['output'] += response.usage.output_tokens
 
         # Parse the response to extract SEARCH/REPLACE blocks
         edit_instructions = parse_search_replace_blocks(response.content[0].text)
 
         # Update code editor memory (this is the only part that maintains some context between calls)
-        code_editor_memory.append(
-            f"Edit Instructions for {file_path}:\n{response.content[0].text}"
-        )
+        code_editor_memory.append(f"Edit Instructions for {file_path}:\n{response.content[0].text}")
 
         # Add the file to code_editor_files set
         code_editor_files.add(file_path)
@@ -365,101 +334,68 @@ async def generate_edit_instructions(
         return edit_instructions
 
     except Exception as e:
-        console.print(
-            f"Error in generating edit instructions: {str(e)}", style="bold red"
-        )
+        console.print(f"Error in generating edit instructions: {str(e)}", style="bold red")
         return []  # Return empty list if any exception occurs
+
 
 
 def parse_search_replace_blocks(response_text):
     blocks = []
-    pattern = r"<SEARCH>\n(.*?)\n</SEARCH>\n<REPLACE>\n(.*?)\n</REPLACE>"
+    pattern = r'<SEARCH>\n(.*?)\n</SEARCH>\n<REPLACE>\n(.*?)\n</REPLACE>'
     matches = re.findall(pattern, response_text, re.DOTALL)
-
+    
     for search, replace in matches:
-        blocks.append({"search": search.strip(), "replace": replace.strip()})
-
+        blocks.append({
+            'search': search.strip(),
+            'replace': replace.strip()
+        })
+    
     return json.dumps(blocks)  # Keep returning JSON string
 
 
-async def edit_and_apply(
-    path, instructions, project_context, is_automode=False, max_retries=3
-):
+async def edit_and_apply(path, instructions, project_context, is_automode=False, max_retries=3):
     global file_contents
     try:
         original_content = file_contents.get(path, "")
         if not original_content:
-            with open(path, "r") as file:
+            with open(path, 'r') as file:
                 original_content = file.read()
             file_contents[path] = original_content
 
         for attempt in range(max_retries):
-            edit_instructions_json = await generate_edit_instructions(
-                path, original_content, instructions, project_context, file_contents
-            )
-
+            edit_instructions_json = await generate_edit_instructions(path, original_content, instructions, project_context, file_contents)
+            
             if edit_instructions_json:
-                edit_instructions = json.loads(
-                    edit_instructions_json
-                )  # Parse JSON here
-                console.print(
-                    Panel(
-                        f"Attempt {attempt + 1}/{max_retries}: The following SEARCH/REPLACE blocks have been generated:",
-                        title="Edit Instructions",
-                        style="cyan",
-                    )
-                )
+                edit_instructions = json.loads(edit_instructions_json)  # Parse JSON here
+                console.print(Panel(f"Attempt {attempt + 1}/{max_retries}: The following SEARCH/REPLACE blocks have been generated:", title="Edit Instructions", style="cyan"))
                 for i, block in enumerate(edit_instructions, 1):
                     console.print(f"Block {i}:")
-                    console.print(
-                        Panel(
-                            f"SEARCH:\n{block['search']}\n\nREPLACE:\n{block['replace']}",
-                            expand=False,
-                        )
-                    )
+                    console.print(Panel(f"SEARCH:\n{block['search']}\n\nREPLACE:\n{block['replace']}", expand=False))
 
-                edited_content, changes_made, failed_edits = await apply_edits(
-                    path, edit_instructions, original_content
-                )
+                edited_content, changes_made, failed_edits = await apply_edits(path, edit_instructions, original_content)
 
                 if changes_made:
-                    file_contents[path] = (
-                        edited_content  # Update the file_contents with the new content
-                    )
-                    console.print(
-                        Panel(
-                            f"File contents updated in system prompt: {path}",
-                            style="green",
-                        )
-                    )
-
+                    file_contents[path] = edited_content  # Update the file_contents with the new content
+                    console.print(Panel(f"File contents updated in system prompt: {path}", style="green"))
+                    
                     if failed_edits:
-                        console.print(
-                            Panel(
-                                "Some edits could not be applied. Retrying...",
-                                style="yellow",
-                            )
-                        )
+                        console.print(Panel(f"Some edits could not be applied. Retrying...", style="yellow"))
                         instructions += f"\n\nPlease retry the following edits that could not be applied:\n{failed_edits}"
                         original_content = edited_content
                         continue
-
+                    
                     return f"Changes applied to {path}"
                 elif attempt == max_retries - 1:
                     return f"No changes could be applied to {path} after {max_retries} attempts. Please review the edit instructions and try again."
                 else:
-                    console.print(
-                        Panel(
-                            f"No changes could be applied in attempt {attempt + 1}. Retrying...",
-                            style="yellow",
-                        )
-                    )
+                    console.print(Panel(f"No changes could be applied in attempt {attempt + 1}. Retrying...", style="yellow"))
             else:
                 return f"No changes suggested for {path}"
-
+        
         return f"Failed to apply changes to {path} after {max_retries} attempts."
     except Exception as e:
         return f"Error editing/applying to file: {str(e)}"
+
 
 
 async def apply_edits(file_path, edit_instructions, original_content):
@@ -473,114 +409,88 @@ async def apply_edits(file_path, edit_instructions, original_content):
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
         TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-        console=console,
+        console=console
     ) as progress:
         edit_task = progress.add_task("[cyan]Applying edits...", total=total_edits)
 
         for i, edit in enumerate(edit_instructions, 1):
-            search_content = edit["search"].strip()
-            replace_content = edit["replace"].strip()
-
+            search_content = edit['search'].strip()
+            replace_content = edit['replace'].strip()
+            
             # Use regex to find the content, ignoring leading/trailing whitespace
             pattern = re.compile(re.escape(search_content), re.DOTALL)
             match = pattern.search(edited_content)
-
+            
             if match:
                 # Replace the content, preserving the original whitespace
                 start, end = match.span()
                 # Strip <SEARCH> and <REPLACE> tags from replace_content
-                replace_content_cleaned = re.sub(
-                    r"</?SEARCH>|</?REPLACE>", "", replace_content
-                )
-                edited_content = (
-                    edited_content[:start]
-                    + replace_content_cleaned
-                    + edited_content[end:]
-                )
+                replace_content_cleaned = re.sub(r'</?SEARCH>|</?REPLACE>', '', replace_content)
+                edited_content = edited_content[:start] + replace_content_cleaned + edited_content[end:]
                 changes_made = True
-
+                
                 # Display the diff for this edit
                 diff_result = generate_diff(search_content, replace_content, file_path)
-                console.print(
-                    Panel(
-                        diff_result,
-                        title=f"Changes in {file_path} ({i}/{total_edits})",
-                        style="cyan",
-                    )
-                )
+                console.print(Panel(diff_result, title=f"Changes in {file_path} ({i}/{total_edits})", style="cyan"))
             else:
-                console.print(
-                    Panel(
-                        f"Edit {i}/{total_edits} not applied: content not found",
-                        style="yellow",
-                    )
-                )
+                console.print(Panel(f"Edit {i}/{total_edits} not applied: content not found", style="yellow"))
                 failed_edits.append(f"Edit {i}: {search_content}")
 
             progress.update(edit_task, advance=1)
 
     if not changes_made:
-        console.print(
-            Panel(
-                "No changes were applied. The file content already matches the desired state.",
-                style="green",
-            )
-        )
+        console.print(Panel("No changes were applied. The file content already matches the desired state.", style="green"))
     else:
         # Write the changes to the file
-        with open(file_path, "w") as file:
+        with open(file_path, 'w') as file:
             file.write(edited_content)
         console.print(Panel(f"Changes have been written to {file_path}", style="green"))
 
     return edited_content, changes_made, "\n".join(failed_edits)
 
-
 def generate_diff(original, new, path):
-    diff = list(
-        difflib.unified_diff(
-            original.splitlines(keepends=True),
-            new.splitlines(keepends=True),
-            fromfile=f"a/{path}",
-            tofile=f"b/{path}",
-            n=3,
-        )
-    )
+    diff = list(difflib.unified_diff(
+        original.splitlines(keepends=True),
+        new.splitlines(keepends=True),
+        fromfile=f"a/{path}",
+        tofile=f"b/{path}",
+        n=3
+    ))
 
-    diff_text = "".join(diff)
+    diff_text = ''.join(diff)
     highlighted_diff = highlight_diff(diff_text)
 
     return highlighted_diff
 
-
 async def execute_code(code, timeout=10):
     global running_processes
     venv_path, activate_script = setup_virtual_environment()
-
+    
     # Generate a unique identifier for this process
     process_id = f"process_{len(running_processes)}"
-
+    
     # Write the code to a temporary file
     with open(f"{process_id}.py", "w") as f:
         f.write(code)
-
+    
     # Prepare the command to run the code
     if sys.platform == "win32":
         command = f'"{activate_script}" && python3 {process_id}.py'
     else:
         command = f'source "{activate_script}" && python3 {process_id}.py'
-
+    
     # Create a process to run the command
     process = await asyncio.create_subprocess_shell(
         command,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         shell=True,
-        preexec_fn=None if sys.platform == "win32" else os.setsid,
+        preexec_fn=None if sys.platform == "win32" else os.setsid
     )
-
+    
     # Store the process in our global dictionary
     running_processes[process_id] = process
-
+    
     try:
         # Wait for initial output or timeout
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
@@ -592,37 +502,32 @@ async def execute_code(code, timeout=10):
         stdout = "Process started and running in the background."
         stderr = ""
         return_code = "Running"
-
+    
     execution_result = f"Process ID: {process_id}\n\nStdout:\n{stdout}\n\nStderr:\n{stderr}\n\nReturn Code: {return_code}"
     return process_id, execution_result
-
 
 def read_file(path):
     global file_contents
     try:
-        with open(path, "r") as f:
+        with open(path, 'r') as f:
             content = f.read()
         file_contents[path] = content
         return f"File '{path}' has been read and stored in the system prompt."
     except Exception as e:
         return f"Error reading file: {str(e)}"
 
-
 def read_multiple_files(paths):
     global file_contents
     results = []
     for path in paths:
         try:
-            with open(path, "r") as f:
+            with open(path, 'r') as f:
                 content = f.read()
             file_contents[path] = content
-            results.append(
-                f"File '{path}' has been read and stored in the system prompt."
-            )
+            results.append(f"File '{path}' has been read and stored in the system prompt.")
         except Exception as e:
             results.append(f"Error reading file '{path}': {str(e)}")
     return "\n".join(results)
-
 
 def list_files(path="."):
     try:
@@ -631,14 +536,12 @@ def list_files(path="."):
     except Exception as e:
         return f"Error listing files: {str(e)}"
 
-
 def tavily_search(query):
     try:
         response = tavily.qna_search(query=query, search_depth="advanced")
         return response
     except Exception as e:
         return f"Error performing search: {str(e)}"
-
 
 def stop_process(process_id):
     global running_processes
@@ -663,11 +566,11 @@ tools = [
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The absolute or relative path where the folder should be created. Use forward slashes (/) for path separation, even on Windows systems.",
+                    "description": "The absolute or relative path where the folder should be created. Use forward slashes (/) for path separation, even on Windows systems."
                 }
             },
-            "required": ["path"],
-        },
+            "required": ["path"]
+        }
     },
     {
         "name": "create_file",
@@ -677,15 +580,15 @@ tools = [
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The absolute or relative path where the file should be created. Use forward slashes (/) for path separation, even on Windows systems.",
+                    "description": "The absolute or relative path where the file should be created. Use forward slashes (/) for path separation, even on Windows systems."
                 },
                 "content": {
                     "type": "string",
-                    "description": "The content of the file. This should include all necessary code, comments, and formatting.",
-                },
+                    "description": "The content of the file. This should include all necessary code, comments, and formatting."
+                }
             },
-            "required": ["path", "content"],
-        },
+            "required": ["path", "content"]
+        }
     },
     {
         "name": "edit_and_apply",
@@ -695,19 +598,19 @@ tools = [
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The absolute or relative path of the file to edit. Use forward slashes (/) for path separation, even on Windows systems.",
+                    "description": "The absolute or relative path of the file to edit. Use forward slashes (/) for path separation, even on Windows systems."
                 },
                 "instructions": {
                     "type": "string",
-                    "description": "After completing the code review, construct a plan for the change between <PLANNING> tags. Ask for additional source files or documentation that may be relevant. The plan should avoid duplication (DRY principle), and balance maintenance and flexibility. Present trade-offs and implementation choices at this step. Consider available Frameworks and Libraries and suggest their use when relevant. STOP at this step if we have not agreed a plan.\n\nOnce agreed, produce code between <OUTPUT> tags. Pay attention to Variable Names, Identifiers and String Literals, and check that they are reproduced accurately from the original source files unless otherwise directed. When naming by convention surround in double colons and in ::UPPERCASE::. Maintain existing code style, use language appropriate idioms. Produce Code Blocks with the language specified after the first backticks",
+                    "description": "After completing the code review, construct a plan for the change between <PLANNING> tags. Ask for additional source files or documentation that may be relevant. The plan should avoid duplication (DRY principle), and balance maintenance and flexibility. Present trade-offs and implementation choices at this step. Consider available Frameworks and Libraries and suggest their use when relevant. STOP at this step if we have not agreed a plan.\n\nOnce agreed, produce code between <OUTPUT> tags. Pay attention to Variable Names, Identifiers and String Literals, and check that they are reproduced accurately from the original source files unless otherwise directed. When naming by convention surround in double colons and in ::UPPERCASE::. Maintain existing code style, use language appropriate idioms. Produce Code Blocks with the language specified after the first backticks"
                 },
                 "project_context": {
                     "type": "string",
-                    "description": "Comprehensive context about the project, including recent changes, new variables or functions, interconnections between files, coding standards, and any other relevant information that might affect the edit.",
-                },
+                    "description": "Comprehensive context about the project, including recent changes, new variables or functions, interconnections between files, coding standards, and any other relevant information that might affect the edit."
+                }
             },
-            "required": ["path", "instructions", "project_context"],
-        },
+            "required": ["path", "instructions", "project_context"]
+        }
     },
     {
         "name": "execute_code",
@@ -717,11 +620,11 @@ tools = [
             "properties": {
                 "code": {
                     "type": "string",
-                    "description": "The Python code to execute in the 'code_execution_env' virtual environment. Include all necessary imports and ensure the code is complete and self-contained.",
+                    "description": "The Python code to execute in the 'code_execution_env' virtual environment. Include all necessary imports and ensure the code is complete and self-contained."
                 }
             },
-            "required": ["code"],
-        },
+            "required": ["code"]
+        }
     },
     {
         "name": "stop_process",
@@ -731,11 +634,11 @@ tools = [
             "properties": {
                 "process_id": {
                     "type": "string",
-                    "description": "The ID of the process to stop, as returned by the execute_code tool for long-running processes.",
+                    "description": "The ID of the process to stop, as returned by the execute_code tool for long-running processes."
                 }
             },
-            "required": ["process_id"],
-        },
+            "required": ["process_id"]
+        }
     },
     {
         "name": "read_file",
@@ -745,11 +648,11 @@ tools = [
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The absolute or relative path of the file to read. Use forward slashes (/) for path separation, even on Windows systems.",
+                    "description": "The absolute or relative path of the file to read. Use forward slashes (/) for path separation, even on Windows systems."
                 }
             },
-            "required": ["path"],
-        },
+            "required": ["path"]
+        }
     },
     {
         "name": "read_multiple_files",
@@ -759,12 +662,14 @@ tools = [
             "properties": {
                 "paths": {
                     "type": "array",
-                    "items": {"type": "string"},
-                    "description": "An array of absolute or relative paths of the files to read. Use forward slashes (/) for path separation, even on Windows systems.",
+                    "items": {
+                        "type": "string"
+                    },
+                    "description": "An array of absolute or relative paths of the files to read. Use forward slashes (/) for path separation, even on Windows systems."
                 }
             },
-            "required": ["paths"],
-        },
+            "required": ["paths"]
+        }
     },
     {
         "name": "list_files",
@@ -774,10 +679,10 @@ tools = [
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The absolute or relative path of the folder to list. Use forward slashes (/) for path separation, even on Windows systems. If not provided, the current working directory will be used.",
+                    "description": "The absolute or relative path of the folder to list. Use forward slashes (/) for path separation, even on Windows systems. If not provided, the current working directory will be used."
                 }
-            },
-        },
+            }
+        }
     },
     {
         "name": "tavily_search",
@@ -787,16 +692,15 @@ tools = [
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "The search query. Be as specific and detailed as possible to get the most relevant results.",
+                    "description": "The search query. Be as specific and detailed as possible to get the most relevant results."
                 }
             },
-            "required": ["query"],
-        },
-    },
+            "required": ["query"]
+        }
+    }
 ]
 
 from typing import Dict, Any
-
 
 async def execute_tool(tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, Any]:
     try:
@@ -812,7 +716,7 @@ async def execute_tool(tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, 
                 tool_input["path"],
                 tool_input["instructions"],
                 tool_input["project_context"],
-                is_automode=automode,
+                is_automode=automode
             )
         elif tool_name == "read_file":
             result = read_file(tool_input["path"])
@@ -826,9 +730,7 @@ async def execute_tool(tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, 
             result = stop_process(tool_input["process_id"])
         elif tool_name == "execute_code":
             process_id, execution_result = await execute_code(tool_input["code"])
-            analysis_task = asyncio.create_task(
-                send_to_ai_for_executing(tool_input["code"], execution_result)
-            )
+            analysis_task = asyncio.create_task(send_to_ai_for_executing(tool_input["code"], execution_result))
             analysis = await analysis_task
             result = f"{execution_result}\n\nAnalysis:\n{analysis}"
             if process_id in running_processes:
@@ -837,31 +739,33 @@ async def execute_tool(tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, 
             is_error = True
             result = f"Unknown tool: {tool_name}"
 
-        return {"content": result, "is_error": is_error}
+        return {
+            "content": result,
+            "is_error": is_error
+        }
     except KeyError as e:
         logging.error(f"Missing required parameter {str(e)} for tool {tool_name}")
         return {
             "content": f"Error: Missing required parameter {str(e)} for tool {tool_name}",
-            "is_error": True,
+            "is_error": True
         }
     except Exception as e:
         logging.error(f"Error executing tool {tool_name}: {str(e)}")
         return {
             "content": f"Error executing tool {tool_name}: {str(e)}",
-            "is_error": True,
+            "is_error": True
         }
-
 
 def encode_image_to_base64(image_path):
     try:
         with Image.open(image_path) as img:
             max_size = (1024, 1024)
             img.thumbnail(max_size, Image.DEFAULT_STRATEGY)
-            if img.mode != "RGB":
-                img = img.convert("RGB")
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
             img_byte_arr = io.BytesIO()
-            img.save(img_byte_arr, format="JPEG")
-            return base64.b64encode(img_byte_arr.getvalue()).decode("utf-8")
+            img.save(img_byte_arr, format='JPEG')
+            return base64.b64encode(img_byte_arr.getvalue()).decode('utf-8')
     except Exception as e:
         return f"Error encoding image: {str(e)}"
 
@@ -896,25 +800,20 @@ async def send_to_ai_for_executing(code, execution_result):
             max_tokens=2000,
             system=system_prompt,
             messages=[
-                {
-                    "role": "user",
-                    "content": f"Analyze this code execution from the 'code_execution_env' virtual environment:\n\nCode:\n{code}\n\nExecution Result:\n{execution_result}",
-                }
-            ],
+                {"role": "user", "content": f"Analyze this code execution from the 'code_execution_env' virtual environment:\n\nCode:\n{code}\n\nExecution Result:\n{execution_result}"}
+            ]
         )
 
         # Update token usage for code execution
-        code_execution_tokens["input"] += response.usage.input_tokens
-        code_execution_tokens["output"] += response.usage.output_tokens
+        code_execution_tokens['input'] += response.usage.input_tokens
+        code_execution_tokens['output'] += response.usage.output_tokens
 
         analysis = response.content[0].text
 
         return analysis
 
     except Exception as e:
-        console.print(
-            f"Error in AI code execution analysis: {str(e)}", style="bold red"
-        )
+        console.print(f"Error in AI code execution analysis: {str(e)}", style="bold red")
         return f"Error analyzing code execution from 'code_execution_env': {str(e)}"
 
 
@@ -922,67 +821,47 @@ def save_chat():
     # Generate filename
     now = datetime.datetime.now()
     filename = f"Chat_{now.strftime('%H%M')}.md"
-
+    
     # Format conversation history
     formatted_chat = "# TurnQuest AI Engineer Chat Log\n\n"
     for message in conversation_history:
-        if message["role"] == "user":
+        if message['role'] == 'user':
             formatted_chat += f"## User\n\n{message['content']}\n\n"
-        elif message["role"] == "assistant":
-            if isinstance(message["content"], str):
+        elif message['role'] == 'assistant':
+            if isinstance(message['content'], str):
                 formatted_chat += f"## Claude\n\n{message['content']}\n\n"
-            elif isinstance(message["content"], list):
-                for content in message["content"]:
-                    if content["type"] == "tool_use":
+            elif isinstance(message['content'], list):
+                for content in message['content']:
+                    if content['type'] == 'tool_use':
                         formatted_chat += f"### Tool Use: {content['name']}\n\n```json\n{json.dumps(content['input'], indent=2)}\n```\n\n"
-                    elif content["type"] == "text":
+                    elif content['type'] == 'text':
                         formatted_chat += f"## Claude\n\n{content['text']}\n\n"
-        elif message["role"] == "user" and isinstance(message["content"], list):
-            for content in message["content"]:
-                if content["type"] == "tool_result":
-                    formatted_chat += (
-                        f"### Tool Result\n\n```\n{content['content']}\n```\n\n"
-                    )
-
+        elif message['role'] == 'user' and isinstance(message['content'], list):
+            for content in message['content']:
+                if content['type'] == 'tool_result':
+                    formatted_chat += f"### Tool Result\n\n```\n{content['content']}\n```\n\n"
+    
     # Save to file
-    with open(filename, "w", encoding="utf-8") as f:
+    with open(filename, 'w', encoding='utf-8') as f:
         f.write(formatted_chat)
-
+    
     return filename
 
 
-async def chat_with_claude(
-    user_input, image_path=None, current_iteration=None, max_iterations=None
-):
+
+async def chat_with_claude(user_input, image_path=None, current_iteration=None, max_iterations=None):
     global conversation_history, automode, main_model_tokens
 
     # This function uses MAINMODEL, which maintains context across calls
     current_conversation = []
 
     if image_path:
-        console.print(
-            Panel(
-                f"Processing image at path: {image_path}",
-                title_align="left",
-                title="Image Processing",
-                expand=False,
-                style="yellow",
-            )
-        )
+        console.print(Panel(f"Processing image at path: {image_path}", title_align="left", title="Image Processing", expand=False, style="yellow"))
         image_base64 = encode_image_to_base64(image_path)
 
         if image_base64.startswith("Error"):
-            console.print(
-                Panel(
-                    f"Error encoding image: {image_base64}",
-                    title="Error",
-                    style="bold red",
-                )
-            )
-            return (
-                "I'm sorry, there was an error processing the image. Please try again.",
-                False,
-            )
+            console.print(Panel(f"Error encoding image: {image_base64}", title="Error", style="bold red"))
+            return "I'm sorry, there was an error processing the image. Please try again.", False
 
         image_message = {
             "role": "user",
@@ -992,55 +871,44 @@ async def chat_with_claude(
                     "source": {
                         "type": "base64",
                         "media_type": "image/jpeg",
-                        "data": image_base64,
-                    },
+                        "data": image_base64
+                    }
                 },
-                {"type": "text", "text": f"User input for image: {user_input}"},
-            ],
+                {
+                    "type": "text",
+                    "text": f"User input for image: {user_input}"
+                }
+            ]
         }
         current_conversation.append(image_message)
-        console.print(
-            Panel(
-                "Image message added to conversation history",
-                title_align="left",
-                title="Image Added",
-                style="green",
-            )
-        )
+        console.print(Panel("Image message added to conversation history", title_align="left", title="Image Added", style="green"))
     else:
         current_conversation.append({"role": "user", "content": user_input})
 
     # Filter conversation history to maintain context
     filtered_conversation_history = []
     for message in conversation_history:
-        if isinstance(message["content"], list):
+        if isinstance(message['content'], list):
             filtered_content = [
-                content
-                for content in message["content"]
-                if content.get("type") != "tool_result"
-                or (
-                    content.get("type") == "tool_result"
-                    and not any(
-                        keyword in content.get("output", "")
-                        for keyword in [
-                            "File contents updated in system prompt",
-                            "File created and added to system prompt",
-                            "has been read and stored in the system prompt",
-                        ]
-                    )
+                content for content in message['content']
+                if content.get('type') != 'tool_result' or (
+                    content.get('type') == 'tool_result' and
+                    not any(keyword in content.get('output', '') for keyword in [
+                        "File contents updated in system prompt",
+                        "File created and added to system prompt",
+                        "has been read and stored in the system prompt"
+                    ])
                 )
             ]
             if filtered_content:
-                filtered_conversation_history.append(
-                    {**message, "content": filtered_content}
-                )
+                filtered_conversation_history.append({**message, 'content': filtered_content})
         else:
             filtered_conversation_history.append(message)
 
     # Combine filtered history with current conversation to maintain context
     messages = filtered_conversation_history + current_conversation
     current_prompt = update_system_prompt(current_iteration, max_iterations)
-    # print("CURRENT PROMPT", current_prompt)
+    #print("CURRENT PROMPT", current_prompt)
     try:
         # MAINMODEL call, which maintains context
         response = client.messages.create(
@@ -1050,45 +918,27 @@ async def chat_with_claude(
             extra_headers={"anthropic-beta": "max-tokens-3-5-sonnet-2024-07-15"},
             messages=messages,
             tools=tools,
-            tool_choice={"type": "auto"},
+            tool_choice={"type": "auto"}
         )
         # Update token usage for MAINMODEL
-        main_model_tokens["input"] += response.usage.input_tokens
-        main_model_tokens["output"] += response.usage.output_tokens
+        main_model_tokens['input'] += response.usage.input_tokens
+        main_model_tokens['output'] += response.usage.output_tokens
     except APIStatusError as e:
         if e.status_code == 429:
-            console.print(
-                Panel(
-                    "Rate limit exceeded. Retrying after a short delay...",
-                    title="API Error",
-                    style="bold yellow",
-                )
-            )
+            console.print(Panel("Rate limit exceeded. Retrying after a short delay...", title="API Error", style="bold yellow"))
             time.sleep(5)
-            return await chat_with_claude(
-                user_input, image_path, current_iteration, max_iterations
-            )
+            return await chat_with_claude(user_input, image_path, current_iteration, max_iterations)
         else:
-            console.print(
-                Panel(f"API Error: {str(e)}", title="API Error", style="bold red")
-            )
-            return (
-                "I'm sorry, there was an error communicating with the AI. Please try again.",
-                False,
-            )
+            console.print(Panel(f"API Error: {str(e)}", title="API Error", style="bold red"))
+            return "I'm sorry, there was an error communicating with the AI. Please try again.", False
     except APIError as e:
-        console.print(
-            Panel(f"API Error: {str(e)}", title="API Error", style="bold red")
-        )
-        return (
-            "I'm sorry, there was an error communicating with the AI. Please try again.",
-            False,
-        )
+        console.print(Panel(f"API Error: {str(e)}", title="API Error", style="bold red"))
+        return "I'm sorry, there was an error communicating with the AI. Please try again.", False
 
     assistant_response = ""
     exit_continuation = False
     tool_uses = []
-    # print("RESPONSE CONTENT", response.content)
+    #print("RESPONSE CONTENT", response.content)
     for content_block in response.content:
         if content_block.type == "text":
             assistant_response += content_block.text
@@ -1097,108 +947,66 @@ async def chat_with_claude(
         elif content_block.type == "tool_use":
             tool_uses.append(content_block)
 
-    console.print(
-        Panel(
-            Markdown(assistant_response),
-            title="Claude's Response",
-            title_align="left",
-            border_style="blue",
-            expand=False,
-        )
-    )
+    console.print(Panel(Markdown(assistant_response), title="Claude's Response", title_align="left", border_style="blue", expand=False))
 
     # Display files in context
     if file_contents:
         files_in_context = "\n".join(file_contents.keys())
     else:
         files_in_context = "No files in context. Read, create, or edit files to add."
-    console.print(
-        Panel(
-            files_in_context,
-            title="Files in Context",
-            title_align="left",
-            border_style="white",
-            expand=False,
-        )
-    )
-    # print("TOOL USES", tool_uses)
+    console.print(Panel(files_in_context, title="Files in Context", title_align="left", border_style="white", expand=False))
+    #print("TOOL USES", tool_uses)
     for tool_use in tool_uses:
         tool_name = tool_use.name
         tool_input = tool_use.input
         tool_use_id = tool_use.id
-        # print("TOOL input", tool_input)
+        #print("TOOL input", tool_input)
         console.print(Panel(f"Tool Used: {tool_name}", style="green"))
-        console.print(
-            Panel(f"Tool Input: {json.dumps(tool_input, indent=2)}", style="green")
-        )
+        console.print(Panel(f"Tool Input: {json.dumps(tool_input, indent=2)}", style="green"))
 
         tool_result = await execute_tool(tool_name, tool_input)
-
+        
         if tool_result["is_error"]:
-            console.print(
-                Panel(
-                    tool_result["content"],
-                    title="Tool Execution Error",
-                    style="bold red",
-                )
-            )
+            console.print(Panel(tool_result["content"], title="Tool Execution Error", style="bold red"))
         else:
-            console.print(
-                Panel(
-                    tool_result["content"],
-                    title_align="left",
-                    title="Tool Result",
-                    style="green",
-                )
-            )
+            console.print(Panel(tool_result["content"], title_align="left", title="Tool Result", style="green"))
 
-        current_conversation.append(
-            {
-                "role": "assistant",
-                "content": [
-                    {
-                        "type": "tool_use",
-                        "id": tool_use_id,
-                        "name": tool_name,
-                        "input": tool_input,
-                    }
-                ],
-            }
-        )
+        current_conversation.append({
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": tool_use_id,
+                    "name": tool_name,
+                    "input": tool_input
+                }
+            ]
+        })
 
-        current_conversation.append(
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": tool_use_id,
-                        "content": tool_result["content"],
-                        "is_error": tool_result["is_error"],
-                    }
-                ],
-            }
-        )
+        current_conversation.append({
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": tool_result["content"],
+                    "is_error": tool_result["is_error"]
+                }
+            ]
+        })
 
         # Update the file_contents dictionary if applicable
-        if (
-            tool_name in ["create_file", "edit_and_apply", "read_file"]
-            and not tool_result["is_error"]
-        ):
-            if "path" in tool_input:
-                file_path = tool_input["path"]
-                if (
-                    "File contents updated in system prompt" in tool_result["content"]
-                    or "File created and added to system prompt"
-                    in tool_result["content"]
-                    or "has been read and stored in the system prompt"
-                    in tool_result["content"]
-                ):
+        if tool_name in ['create_file', 'edit_and_apply', 'read_file'] and not tool_result["is_error"]:
+            if 'path' in tool_input:
+                file_path = tool_input['path']
+                if "File contents updated in system prompt" in tool_result["content"] or \
+                   "File created and added to system prompt" in tool_result["content"] or \
+                   "has been read and stored in the system prompt" in tool_result["content"]:
                     # The file_contents dictionary is already updated in the tool function
                     pass
 
         messages = filtered_conversation_history + current_conversation
-        # print("Before I call Tool Checker", messages)
+        #print("Before I call Tool Checker", messages)
         try:
             tool_response = client.messages.create(
                 model=TOOLCHECKERMODEL,
@@ -1207,83 +1015,55 @@ async def chat_with_claude(
                 extra_headers={"anthropic-beta": "max-tokens-3-5-sonnet-2024-07-15"},
                 messages=messages,
                 tools=tools,
-                tool_choice={"type": "auto"},
+                tool_choice={"type": "auto"}
             )
             # Update token usage for tool checker
-            tool_checker_tokens["input"] += tool_response.usage.input_tokens
-            tool_checker_tokens["output"] += tool_response.usage.output_tokens
+            tool_checker_tokens['input'] += tool_response.usage.input_tokens
+            tool_checker_tokens['output'] += tool_response.usage.output_tokens
 
             tool_checker_response = ""
             for tool_content_block in tool_response.content:
                 if tool_content_block.type == "text":
                     tool_checker_response += tool_content_block.text
-            console.print(
-                Panel(
-                    Markdown(tool_checker_response),
-                    title="Claude's Response to Tool Result",
-                    title_align="left",
-                    border_style="blue",
-                    expand=False,
-                )
-            )
+            console.print(Panel(Markdown(tool_checker_response), title="Claude's Response to Tool Result",  title_align="left", border_style="blue", expand=False))
             assistant_response += "\n\n" + tool_checker_response
         except APIError as e:
             error_message = f"Error in tool response: {str(e)}"
             console.print(Panel(error_message, title="Error", style="bold red"))
             assistant_response += f"\n\n{error_message}"
-    # print("ASSISTANT RESPONSE VALUE1", assistant_response)
+    #print("ASSISTANT RESPONSE VALUE1", assistant_response)
     if assistant_response:
-        current_conversation.append(
-            {"role": "assistant", "content": assistant_response}
-        )
+        current_conversation.append({"role": "assistant", "content": assistant_response})
 
-    conversation_history = messages + [
-        {"role": "assistant", "content": assistant_response}
-    ]
+    conversation_history = messages + [{"role": "assistant", "content": assistant_response}]
 
     # Display token usage at the end
     display_token_usage()
 
     return assistant_response, exit_continuation
 
-
 def reset_code_editor_memory():
     global code_editor_memory
     code_editor_memory = []
-    console.print(
-        Panel("Code editor memory has been reset.", title="Reset", style="bold green")
-    )
+    console.print(Panel("Code editor memory has been reset.", title="Reset", style="bold green"))
 
 
 def reset_conversation():
-    global \
-        conversation_history, \
-        main_model_tokens, \
-        tool_checker_tokens, \
-        code_editor_tokens, \
-        code_execution_tokens, \
-        file_contents, \
-        code_editor_files
+    global conversation_history, main_model_tokens, tool_checker_tokens, code_editor_tokens, code_execution_tokens, file_contents, code_editor_files
     conversation_history = []
-    main_model_tokens = {"input": 0, "output": 0}
-    tool_checker_tokens = {"input": 0, "output": 0}
-    code_editor_tokens = {"input": 0, "output": 0}
-    code_execution_tokens = {"input": 0, "output": 0}
+    main_model_tokens = {'input': 0, 'output': 0}
+    tool_checker_tokens = {'input': 0, 'output': 0}
+    code_editor_tokens = {'input': 0, 'output': 0}
+    code_execution_tokens = {'input': 0, 'output': 0}
     file_contents = {}
     code_editor_files = set()
     reset_code_editor_memory()
-    console.print(
-        Panel(
-            "Conversation history, token counts, file contents, code editor memory, and code editor files have been reset.",
-            title="Reset",
-            style="bold green",
-        )
-    )
+    console.print(Panel("Conversation history, token counts, file contents, code editor memory, and code editor files have been reset.", title="Reset", style="bold green"))
     display_token_usage()
-
 
 def display_token_usage():
     from rich.table import Table
+    from rich.panel import Panel
     from rich.box import ROUNDED
 
     table = Table(box=ROUNDED)
@@ -1298,7 +1078,7 @@ def display_token_usage():
         "Main Model": {"input": 3.00, "output": 15.00, "has_context": True},
         "Tool Checker": {"input": 3.00, "output": 15.00, "has_context": False},
         "Code Editor": {"input": 3.00, "output": 15.00, "has_context": True},
-        "Code Execution": {"input": 3.00, "output": 15.00, "has_context": False},
+        "Code Execution": {"input": 3.00, "output": 15.00, "has_context": False}
     }
 
     total_input = 0
@@ -1306,14 +1086,12 @@ def display_token_usage():
     total_cost = 0
     total_context_tokens = 0
 
-    for model, tokens in [
-        ("Main Model", main_model_tokens),
-        ("Tool Checker", tool_checker_tokens),
-        ("Code Editor", code_editor_tokens),
-        ("Code Execution", code_execution_tokens),
-    ]:
-        input_tokens = tokens["input"]
-        output_tokens = tokens["output"]
+    for model, tokens in [("Main Model", main_model_tokens),
+                          ("Tool Checker", tool_checker_tokens),
+                          ("Code Editor", code_editor_tokens),
+                          ("Code Execution", code_execution_tokens)]:
+        input_tokens = tokens['input']
+        output_tokens = tokens['output']
         total_tokens = input_tokens + output_tokens
 
         total_input += input_tokens
@@ -1335,10 +1113,8 @@ def display_token_usage():
             f"{input_tokens:,}",
             f"{output_tokens:,}",
             f"{total_tokens:,}",
-            f"{percentage:.2f}%"
-            if model_costs[model]["has_context"]
-            else "Doesn't save context",
-            f"${model_cost:.3f}",
+            f"{percentage:.2f}%" if model_costs[model]["has_context"] else "Doesn't save context",
+            f"${model_cost:.3f}"
         )
 
     grand_total = total_input + total_output
@@ -1351,83 +1127,49 @@ def display_token_usage():
         f"{grand_total:,}",
         "",  # Empty string for the "% of Context" column
         f"${total_cost:.3f}",
-        style="bold",
+        style="bold"
     )
 
     console.print(table)
 
 
+
 async def main():
     global automode, conversation_history
-    console.print(
-        Panel(
-            "Welcome to the Turnkey AI Software Engineer with Multi-Agent and Image Support!",
-            title="Welcome",
-            style="bold green",
-        )
-    )
+    console.print(Panel("Welcome to the Turnkey AI Software Engineer with Multi-Agent and Image Support!", title="Welcome", style="bold green"))
     console.print("Type 'exit' to end the conversation.")
     console.print("Type 'image' to include an image in your message.")
-    console.print(
-        "Type 'automode [number]' to enter Autonomous mode with a specific number of iterations."
-    )
+    console.print("Type 'automode [number]' to enter Autonomous mode with a specific number of iterations.")
     console.print("Type 'reset' to clear the conversation history.")
     console.print("Type 'save chat' to save the conversation to a Markdown file.")
-    console.print(
-        "While in automode, press Ctrl+C at any time to exit the automode to return to regular chat."
-    )
+    console.print("While in automode, press Ctrl+C at any time to exit the automode to return to regular chat.")
 
     while True:
         user_input = await get_user_input()
 
-        if user_input.lower() == "exit":
-            console.print(
-                Panel(
-                    "Thank you for chatting. Goodbye!",
-                    title_align="left",
-                    title="Goodbye",
-                    style="bold green",
-                )
-            )
+        if user_input.lower() == 'exit':
+            console.print(Panel("Thank you for chatting. Goodbye!", title_align="left", title="Goodbye", style="bold green"))
             break
 
-        if user_input.lower() == "reset":
+        if user_input.lower() == 'reset':
             reset_conversation()
             continue
 
-        if user_input.lower() == "save chat":
+        if user_input.lower() == 'save chat':
             filename = save_chat()
-            console.print(
-                Panel(
-                    f"Chat saved to {filename}", title="Chat Saved", style="bold green"
-                )
-            )
+            console.print(Panel(f"Chat saved to {filename}", title="Chat Saved", style="bold green"))
             continue
 
-        if user_input.lower() == "image":
-            image_path = (
-                (
-                    await get_user_input(
-                        "Drag and drop your image here, then press enter: "
-                    )
-                )
-                .strip()
-                .replace("'", "")
-            )
+        if user_input.lower() == 'image':
+            image_path = (await get_user_input("Drag and drop your image here, then press enter: ")).strip().replace("'", "")
 
             if os.path.isfile(image_path):
                 user_input = await get_user_input("You (prompt for image): ")
                 response, _ = await chat_with_claude(user_input, image_path)
             else:
-                console.print(
-                    Panel(
-                        "Invalid image path. Please try again.",
-                        title="Error",
-                        style="bold red",
-                    )
-                )
+                console.print(Panel("Invalid image path. Please try again.", title="Error", style="bold red"))
                 continue
-        elif user_input.lower().startswith("automode"):
+        elif user_input.lower().startswith('automode'):
             try:
                 parts = user_input.split()
                 if len(parts) > 1 and parts[1].isdigit():
@@ -1436,107 +1178,40 @@ async def main():
                     max_iterations = MAX_CONTINUATION_ITERATIONS
 
                 automode = True
-                console.print(
-                    Panel(
-                        f"Entering automode with {max_iterations} iterations. Please provide the goal of the automode.",
-                        title_align="left",
-                        title="Automode",
-                        style="bold yellow",
-                    )
-                )
-                console.print(
-                    Panel(
-                        "Press Ctrl+C at any time to exit the automode loop.",
-                        style="bold yellow",
-                    )
-                )
+                console.print(Panel(f"Entering automode with {max_iterations} iterations. Please provide the goal of the automode.", title_align="left", title="Automode", style="bold yellow"))
+                console.print(Panel("Press Ctrl+C at any time to exit the automode loop.", style="bold yellow"))
                 user_input = await get_user_input()
 
                 iteration_count = 0
                 try:
                     while automode and iteration_count < max_iterations:
-                        response, exit_continuation = await chat_with_claude(
-                            user_input,
-                            current_iteration=iteration_count + 1,
-                            max_iterations=max_iterations,
-                        )
+                        response, exit_continuation = await chat_with_claude(user_input, current_iteration=iteration_count+1, max_iterations=max_iterations)
 
                         if exit_continuation or CONTINUATION_EXIT_PHRASE in response:
-                            console.print(
-                                Panel(
-                                    "Automode completed.",
-                                    title_align="left",
-                                    title="Automode",
-                                    style="green",
-                                )
-                            )
+                            console.print(Panel("Automode completed.", title_align="left", title="Automode", style="green"))
                             automode = False
                         else:
-                            console.print(
-                                Panel(
-                                    f"Continuation iteration {iteration_count + 1} completed. Press Ctrl+C to exit automode. ",
-                                    title_align="left",
-                                    title="Automode",
-                                    style="yellow",
-                                )
-                            )
+                            console.print(Panel(f"Continuation iteration {iteration_count + 1} completed. Press Ctrl+C to exit automode. ", title_align="left", title="Automode", style="yellow"))
                             user_input = "Continue with the next step. Or STOP by saying 'AUTOMODE_COMPLETE' if you think you've achieved the results established in the original request."
                         iteration_count += 1
 
                         if iteration_count >= max_iterations:
-                            console.print(
-                                Panel(
-                                    "Max iterations reached. Exiting automode.",
-                                    title_align="left",
-                                    title="Automode",
-                                    style="bold red",
-                                )
-                            )
+                            console.print(Panel("Max iterations reached. Exiting automode.", title_align="left", title="Automode", style="bold red"))
                             automode = False
                 except KeyboardInterrupt:
-                    console.print(
-                        Panel(
-                            "\nAutomode interrupted by user. Exiting automode.",
-                            title_align="left",
-                            title="Automode",
-                            style="bold red",
-                        )
-                    )
+                    console.print(Panel("\nAutomode interrupted by user. Exiting automode.", title_align="left", title="Automode", style="bold red"))
                     automode = False
-                    if (
-                        conversation_history
-                        and conversation_history[-1]["role"] == "user"
-                    ):
-                        conversation_history.append(
-                            {
-                                "role": "assistant",
-                                "content": "Automode interrupted. How can I assist you further?",
-                            }
-                        )
+                    if conversation_history and conversation_history[-1]["role"] == "user":
+                        conversation_history.append({"role": "assistant", "content": "Automode interrupted. How can I assist you further?"})
             except KeyboardInterrupt:
-                console.print(
-                    Panel(
-                        "\nAutomode interrupted by user. Exiting automode.",
-                        title_align="left",
-                        title="Automode",
-                        style="bold red",
-                    )
-                )
+                console.print(Panel("\nAutomode interrupted by user. Exiting automode.", title_align="left", title="Automode", style="bold red"))
                 automode = False
                 if conversation_history and conversation_history[-1]["role"] == "user":
-                    conversation_history.append(
-                        {
-                            "role": "assistant",
-                            "content": "Automode interrupted. How can I assist you further?",
-                        }
-                    )
+                    conversation_history.append({"role": "assistant", "content": "Automode interrupted. How can I assist you further?"})
 
-            console.print(
-                Panel("Exited automode. Returning to regular chat.", style="green")
-            )
+            console.print(Panel("Exited automode. Returning to regular chat.", style="green"))
         else:
             response, _ = await chat_with_claude(user_input)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
