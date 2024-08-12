@@ -207,7 +207,44 @@ def get_jira_issue_details(issue_key: str) -> str:
             return f"Issue {issue_key} not found."
         else:
             return f"An error occurred: {e.text}"
+@tool
+def jira_issue_comment_crud(issue_key: str, action: Literal["add", "update", "delete"], comment_id: Optional[int] = None, comment: Optional[str] = None) -> str:
+    """
+    Perform CRUD operations on comments of a Jira issue.
 
+    Args:
+        issue_key: The key of the Jira issue.
+        action: The action to perform on the comment. It can be "add", "update", or "delete".
+        comment_id: The ID of the comment to update or delete. Required for "update" and "delete" actions.
+        comment: The content of the comment to add or update. Required for "add" and "update" actions.
+
+    Returns:
+        str: A message indicating the success or failure of the operation.
+    """
+    if action == "add":
+        if not comment:
+            raise ValueError("Comment is required for 'add' action.")
+        comment_obj = jira.add_comment(issue_key, comment)
+        return f"Comment added to issue {issue_key}: {comment_obj.raw}."
+    
+    if action in ["update", "delete"]:
+        if not comment_id:
+            raise ValueError(f"Comment ID is required for '{action}' action.")
+        comment_obj = jira.comment(issue_key, comment_id)
+        if not comment_obj:
+            return f"Comment {comment_id} not found for issue {issue_key}."
+        
+        if action == "update":
+            if not comment:
+                raise ValueError("Comment is required for 'update' action.")
+            comment_obj.update(body=comment)
+            return f"Comment {comment_id} updated for issue {issue_key}."
+        
+        if action == "delete":
+            comment_obj.delete()
+            return f"Comment {comment_id} deleted from issue {issue_key}."
+    
+    return "Invalid action. Please specify 'add', 'update', or 'delete'."
 
 @tool
 def create_folder(path: str = ".") -> str:
@@ -759,6 +796,7 @@ tools = [
     get_jira_info,
     find_jira_issues_jql,
     get_jira_issue_details,
+    jira_issue_comment_crud
 ]
 tools_map = {t.name: t for t in tools}
 # gemai_tools = [tool_to_dict(convert_to_genai_function_declarations(tools))]
