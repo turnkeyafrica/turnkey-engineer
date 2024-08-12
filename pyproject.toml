@@ -19,6 +19,7 @@ langchain-google-genai = "^1.0.8"
 jira = "^3.8.0"
 jupyter = "^1.0.0"
 langchain-anthropic = "^0.1.22"
+langgraph = "^0.2.3"
 
 
 [tool.poetry.group.dev.dependencies]

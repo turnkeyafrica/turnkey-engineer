@@ -1,5 +1,8 @@
 .env
 Chat*md
-Chat*{md,json}
+Chat*md
+Chat*json
+*error_log.txt
 *.ipynb
 .idea
+__pycache__
